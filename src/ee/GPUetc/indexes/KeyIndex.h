@@ -3,7 +3,6 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include "GPUetc/common/nodedata.h"
 
 namespace voltdb {
 class GKeyIndex {

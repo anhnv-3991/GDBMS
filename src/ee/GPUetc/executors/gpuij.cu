@@ -78,7 +78,7 @@ GPUIJ::~GPUIJ()
 	where_expression_.free();
 }
 
-bool GPUIJ::join(){
+bool GPUIJ::execute(){
 	gettimeofday(&all_start_, NULL);
 
 	/******** Calculate size of blocks, grids, and GPU buffers *********/
@@ -126,7 +126,7 @@ bool GPUIJ::join(){
 			inner_table_.moveToBlock(inner_idx);
 			gettimeofday(&istart, NULL);
 
-			IndexFilter(index_psum, res_bound, prejoin_res_dev);
+			indexFilter(index_psum, res_bound, prejoin_res_dev);
 
 			gettimeofday(&iend, NULL);
 			index_.push_back(timeDiff(istart, iend));
@@ -135,7 +135,7 @@ bool GPUIJ::join(){
 			ulong tmp_size = 0;
 
 			gettimeofday(&balance_start, NULL);
-			Rebalance(index_psum, res_bound, &tmp_result, gpu_size, &tmp_size);
+			rebalance(index_psum, res_bound, &tmp_result, gpu_size, &tmp_size);
 			gettimeofday(&balance_end, NULL);
 
 			rebalance_.push_back(timeDiff(balance_start, balance_end));
@@ -149,7 +149,7 @@ bool GPUIJ::join(){
 			checkCudaErrors(cudaMalloc(&exp_psum, (tmp_size + 1) * sizeof(ulong)));
 
 			gettimeofday(&estart, NULL);
-			ExpressionFilter(tmp_result, jresult_dev, exp_psum, tmp_size);
+			expressionFilter(tmp_result, jresult_dev, exp_psum, tmp_size);
 			gettimeofday(&eend, NULL);
 
 			expression_.push_back(timeDiff(estart, eend));
@@ -168,7 +168,7 @@ bool GPUIJ::join(){
 			checkCudaErrors(cudaMalloc(&write_dev, jr_size * sizeof(RESULT)));
 
 			gettimeofday(&wstart, NULL);
-			GUtilities::RemoveEmptyResult(write_dev, jresult_dev, exp_psum, tmp_size);
+			GUtilities::removeEmptyResult(write_dev, jresult_dev, exp_psum, tmp_size);
 			gettimeofday(&wend, NULL);
 			wtime_.push_back(timeDiff(wstart, wend));
 
@@ -191,7 +191,6 @@ bool GPUIJ::join(){
 	checkCudaErrors(cudaFree(prejoin_res_dev));
 	gettimeofday(&all_end_, NULL);
 
-	//exit(0);
 	return true;
 }
 
@@ -321,10 +320,11 @@ unsigned long GPUIJ::timeDiff(struct timeval start, struct timeval end)
 	return GUtilities::timeDiff(start, end);
 }
 
-extern "C" __global__ void PrejoinFilterDev(GTable outer, int outer_rows, GExpression prejoin, bool *result,int64_t *val_stack, ValueType *type_stack)
+__global__ void prejoinDev(GTable outer, int outer_rows, GExpression prejoin, bool *result,GNValue *stack)
 {
 	int index = blockIdx.x * blockDim.x + threadIdx.x;
 	int offset = blockDim.x * gridDim.x;
+	GStack tmp_stk(stack + index, offset);
 
 	GTuple outer_tuple;
 
@@ -332,12 +332,15 @@ extern "C" __global__ void PrejoinFilterDev(GTable outer, int outer_rows, GExpre
 		GNValue res = GNValue::getTrue();
 		outer_tuple = outer.getGTuple(i);
 
-		res = (prejoin.getSize() > 1) ? prejoin.evaluate(&outer_tuple, NULL, val_stack + index, type_stack + index, offset) : res;
+		if (prejoin.size() > 1) {
+			res = prejoin.evaluate(outer_tuple, GTuple(), tmp_stk);
+		}
+
 		result[i] = res.isTrue();
 	}
 }
 
-void GPUIJ::PrejoinFilter(bool *result)
+void GPUIJ::prejoinFilter(bool *result)
 {
 	int outer_rows = outer_table_.getCurrentRowNum();
 	int block_x, grid_x;
@@ -345,24 +348,26 @@ void GPUIJ::PrejoinFilter(bool *result)
 	block_x = (outer_rows < BLOCK_SIZE_X) ? outer_rows : BLOCK_SIZE_X;
 	grid_x = (outer_rows - 1)/block_x + 1;
 
-	int64_t *val_stack;
-	ValueType *type_stack;
+	int stack_size = prejoin_expression_.height();
+	GNValue *stack = NULL;
 
-	checkCudaErrors(cudaMalloc(&val_stack, sizeof(int64_t) * block_x * grid_x * MAX_STACK_SIZE));
-	checkCudaErrors(cudaMalloc(&type_stack, sizeof(ValueType) * block_x * grid_x * MAX_STACK_SIZE));
+	if (stack_size > 0) {
+		checkCudaErrors(cudaMalloc(&stack, sizeof(GNValue) * block_x * grid_x * stack_size));
+	}
 
 	dim3 grid_size(grid_x, 1, 1);
 	dim3 block_size(block_x, 1, 1);
 
-	PrejoinFilterDev<<<grid_size, block_size>>>(outer_table_, outer_rows, prejoin_expression_, result,val_stack, type_stack);
+	prejoinDev<<<grid_size, block_size>>>(outer_table_, outer_rows, prejoin_expression_, result, stack);
 	checkCudaErrors(cudaGetLastError());
 	checkCudaErrors(cudaDeviceSynchronize());
 
-	checkCudaErrors(cudaFree(val_stack));
-	checkCudaErrors(cudaFree(type_stack));
+	if (stack_size > 0) {
+		checkCudaErrors(cudaFree(stack));
+	}
 }
 
-void GPUIJ::PrejoinFilter(bool *result, cudaStream_t stream)
+void GPUIJ::prejoinFilter(bool *result, cudaStream_t stream)
 {
 	int outer_rows = outer_table_.getCurrentRowNum();
 	int block_x, grid_x;
@@ -370,23 +375,25 @@ void GPUIJ::PrejoinFilter(bool *result, cudaStream_t stream)
 	block_x = (outer_rows < BLOCK_SIZE_X) ? outer_rows : BLOCK_SIZE_X;
 	grid_x = (outer_rows - 1)/block_x + 1;
 
-	int64_t *val_stack;
-	ValueType *type_stack;
+	int stack_size = prejoin_expression_.height();
+	GNValue *stack = NULL;
 
-	checkCudaErrors(cudaMalloc(&val_stack, sizeof(int64_t) * block_x * grid_x * MAX_STACK_SIZE));
-	checkCudaErrors(cudaMalloc(&type_stack, sizeof(ValueType) * block_x * grid_x * MAX_STACK_SIZE));
+	if (stack_size > 0) {
+		checkCudaErrors(cudaMalloc(&stack, sizeof(GNValue) * block_x * grid_x * stack_size));
+	}
 
 	dim3 grid_size(grid_x, 1, 1);
 	dim3 block_size(block_x, 1, 1);
 
-	PrejoinFilterDev<<<grid_size, block_size, 0, stream>>>(outer_table_, outer_rows, prejoin_expression_, result, val_stack, type_stack);
+	prejoinDev<<<grid_size, block_size, 0, stream>>>(outer_table_, outer_rows, prejoin_expression_, result, stack);
 	checkCudaErrors(cudaGetLastError());
 
-	checkCudaErrors(cudaFree(val_stack));
-	checkCudaErrors(cudaFree(type_stack));
+	if (stack_size > 0) {
+		checkCudaErrors(cudaFree(stack));
+	}
 }
 
-extern "C" __global__ void decompose(ResBound *in, RESULT *out, ulong *in_location, ulong *local_offset, int size)
+__global__ void decomposeDev(ResBound *in, RESULT *out, ulong *in_location, ulong *local_offset, int size)
 {
 	int index = threadIdx.x + blockIdx.x * blockDim.x;
 
@@ -396,7 +403,7 @@ extern "C" __global__ void decompose(ResBound *in, RESULT *out, ulong *in_locati
 	}
 }
 
-void GPUIJ::Decompose(ResBound *in, RESULT *out, ulong *in_location, ulong *local_offset, int size)
+void GPUIJ::decompose(ResBound *in, RESULT *out, ulong *in_location, ulong *local_offset, int size)
 {
 	int block_x, grid_x;
 
@@ -406,12 +413,12 @@ void GPUIJ::Decompose(ResBound *in, RESULT *out, ulong *in_location, ulong *loca
 	dim3 grid_size(grid_x, 1, 1);
 	dim3 block_size(block_x, 1, 1);
 
-	decompose<<<grid_size, block_x>>>(in, out, in_location, local_offset, size);
+	decomposeDev<<<grid_size, block_x>>>(in, out, in_location, local_offset, size);
 	checkCudaErrors(cudaGetLastError());
 	checkCudaErrors(cudaDeviceSynchronize());
 }
 
-void GPUIJ::Decompose(ResBound *in, RESULT *out, ulong *in_location, ulong *local_offset, int size, cudaStream_t stream)
+void GPUIJ::decompose(ResBound *in, RESULT *out, ulong *in_location, ulong *local_offset, int size, cudaStream_t stream)
 {
 	int block_x, grid_x;
 
@@ -421,19 +428,17 @@ void GPUIJ::Decompose(ResBound *in, RESULT *out, ulong *in_location, ulong *loca
 	dim3 grid_size(grid_x, 1, 1);
 	dim3 block_size(block_x, 1, 1);
 
-	decompose<<<grid_size, block_x, 0, stream>>>(in, out, in_location, local_offset, size);
+	decomposeDev<<<grid_size, block_x, 0, stream>>>(in, out, in_location, local_offset, size);
 	checkCudaErrors(cudaGetLastError());
 }
 
 
-extern "C" __global__ void IndexFilterLowerBound(GTable search_table, GTreeIndex inner_idx,
-													int search_rows, int inner_rows,
-													ulong *index_psum, ResBound *res_bound,
-													IndexLookupType lookup_type,
-													bool *prejoin_res_dev,
-													int64_t *val_stack,
-													ValueType *type_stack
-										  	  	  )
+__global__ void lowerBound(GTable search_table, GTreeIndex inner_idx,
+							int search_rows, int inner_rows,
+							ulong *index_psum, ResBound *res_bound,
+							IndexLookupType lookup_type,
+							bool *prejoin_res_dev
+						  )
 
 {
 	int index = threadIdx.x + blockIdx.x * blockDim.x;
@@ -451,32 +456,30 @@ extern "C" __global__ void IndexFilterLowerBound(GTable search_table, GTreeIndex
 			outer_key.createKey(tuple);
 
 			switch (lookup_type) {
-			case INDEX_LOOKUP_TYPE_EQ:
-			case INDEX_LOOKUP_TYPE_GT:
-			case INDEX_LOOKUP_TYPE_GTE:
-			case INDEX_LOOKUP_TYPE_LT: {
-				res_bound[i].left = inner_idx.lowerBound(outer_key, 0, inner_rows - 1);
-				break;
-			}
-			case INDEX_LOOKUP_TYPE_LTE: {
-				res_bound[i].left = 0;
-				break;
-			}
-			default:
-				break;
+				case INDEX_LOOKUP_TYPE_EQ:
+				case INDEX_LOOKUP_TYPE_GT:
+				case INDEX_LOOKUP_TYPE_GTE:
+				case INDEX_LOOKUP_TYPE_LT: {
+					res_bound[i].left = inner_idx.lowerBound(outer_key);
+					break;
+				}
+				case INDEX_LOOKUP_TYPE_LTE: {
+					res_bound[i].left = 0;
+					break;
+				}
+				default:
+					break;
 			}
 		}
 	}
 }
 
-extern "C" __global__ void IndexFilterUpperBound(GTable search_table, GTreeIndex inner_idx,
-													int search_rows, int inner_rows,
-													ulong *index_psum, ResBound *res_bound,
-													IndexLookupType lookup_type,
-													bool *prejoin_res_dev,
-													int64_t *val_stack,
-													ValueType *type_stack
-										  	  	  )
+__global__ void upperBound(GTable search_table, GTreeIndex inner_idx,
+								int search_rows, int inner_rows,
+								ulong *index_psum, ResBound *res_bound,
+								IndexLookupType lookup_type,
+								bool *prejoin_res_dev
+							  )
 
 {
 	int index = threadIdx.x + blockIdx.x * blockDim.x;
@@ -494,7 +497,7 @@ extern "C" __global__ void IndexFilterUpperBound(GTable search_table, GTreeIndex
 			switch (lookup_type) {
 			case INDEX_LOOKUP_TYPE_EQ:
 			case INDEX_LOOKUP_TYPE_LTE: {
-				res_bound[i].right = inner_idx.upperBound(outer_key, 0, inner_rows - 1);
+				res_bound[i].right = inner_idx.upperBound(outer_key);
 				break;
 			}
 			case INDEX_LOOKUP_TYPE_GT:
@@ -520,26 +523,29 @@ extern "C" __global__ void IndexFilterUpperBound(GTable search_table, GTreeIndex
 }
 
 
-extern "C" __global__ void constructSearchTable(GTable outer_table, GTable search_table,
-												int outer_rows,
-												GExpressionVector search_exp,
-												int64_t *val_stack, ValueType *type_stack)
+__global__ void constructSearchTable(GTable outer_table, GTable search_table,
+										int outer_rows,
+										GExpressionVector search_exp,
+										GNValue *stack)
 {
 	GNValue tmp;
 	int index = threadIdx.x + blockIdx.x * blockDim.x;
 	int stride = blockDim.x * gridDim.x;
 	GTuple tuple;
+	GStack tmp_stk(stack + index, stride);
 
 	for (int i = index; i < outer_rows; i += stride) {
 		tuple = search_table.getGTuple(i);
+
 		for (int j = 0; j < search_exp.size(); j++) {
-			tmp = search_exp.at(j).evaluate(&tuple, NULL, val_stack, type_stack, stride);
+			tmp_stk.reset();
+			tmp = search_exp.at(j).evaluate(tuple, GTuple(), tmp_stk);
 			tuple.setGNValue(tmp, j);
 		}
 	}
 }
 
-void GPUIJ::IndexFilter(ulong *index_psum, ResBound *res_bound, bool *prejoin_res_dev)
+void GPUIJ::indexFilter(ulong *index_psum, ResBound *res_bound, bool *prejoin_res_dev)
 {
 	int outer_rows = outer_table_.getCurrentRowNum(), inner_rows = inner_table_.getCurrentRowNum();
 	int block_x, grid_x;
@@ -547,33 +553,44 @@ void GPUIJ::IndexFilter(ulong *index_psum, ResBound *res_bound, bool *prejoin_re
 	block_x = (outer_rows < BLOCK_SIZE_X) ? outer_rows : BLOCK_SIZE_X;
 	grid_x = (outer_rows - 1)/block_x + 1;
 
-	int64_t *val_stack;
-	ValueType *type_stack;
+	int stack_size = 0;
 
-	checkCudaErrors(cudaMalloc(&val_stack, sizeof(int64_t) * block_x * grid_x * MAX_STACK_SIZE));
-	checkCudaErrors(cudaMalloc(&type_stack, sizeof(ValueType) * block_x * grid_x * MAX_STACK_SIZE));
+	for (int i = 0; i < search_exp_.size(); i++) {
+		if (search_exp_[i].height() > stack_size)
+			stack_size = search_exp_[i].height();
+	}
+
+	GNValue *stack;
+
+	if (stack_size > 0) {
+		checkCudaErrors(cudaMalloc(&stack, sizeof(GNValue) * block_x * grid_x * stack_size));
+	}
 
 	dim3 grid_size(grid_x, 1, 1);
 	dim3 block_size(block_x, 1, 1);
 	GTable search_table(NULL, search_exp_.size());
 	GTreeIndex *inner_idx = static_cast<GTreeIndex*>(inner_table_.getCurrentIndex());
 
-	constructSearchTable<<<grid_size, block_size>>>(outer_table_, search_table, outer_rows, search_exp_, val_stack, type_stack);
+	constructSearchTable<<<grid_size, block_size>>>(outer_table_, search_table, outer_rows, search_exp_, stack);
+	checkCudaErrors(cudaGetLastError());
 
-	IndexFilterLowerBound<<<grid_size, block_size>>>(search_table, *inner_idx, outer_rows, inner_rows, index_psum, res_bound, lookup_type_, prejoin_res_dev, val_stack, type_stack);
+	lowerBound<<<grid_size, block_size>>>(search_table, *inner_idx, outer_rows, inner_rows, index_psum, res_bound, lookup_type_, prejoin_res_dev);
+	checkCudaErrors(cudaGetLastError());
 
-	IndexFilterUpperBound<<<grid_size, block_size>>>(outer_table_, *inner_idx, outer_rows, inner_rows, index_psum, res_bound, lookup_type_, prejoin_res_dev, val_stack, type_stack);
+	upperBound<<<grid_size, block_size>>>(search_table, *inner_idx, outer_rows, inner_rows, index_psum, res_bound, lookup_type_, prejoin_res_dev);
+	checkCudaErrors(cudaGetLastError());
 
 	checkCudaErrors(cudaDeviceSynchronize());
 
 	search_table.removeTable();
 
-	checkCudaErrors(cudaFree(val_stack));
-	checkCudaErrors(cudaFree(type_stack));
+	if (stack_size > 0) {
+		checkCudaErrors(cudaFree(stack));
+	}
 
 }
 
-void GPUIJ::IndexFilter(ulong *index_psum, ResBound *res_bound, bool *prejoin_res_dev, cudaStream_t stream)
+void GPUIJ::indexFilter(ulong *index_psum, ResBound *res_bound, bool *prejoin_res_dev, cudaStream_t stream)
 {
 	int outer_rows = outer_table_.getCurrentRowNum(), inner_rows = inner_table_.getCurrentRowNum();
 	int block_x, grid_x;
@@ -581,50 +598,70 @@ void GPUIJ::IndexFilter(ulong *index_psum, ResBound *res_bound, bool *prejoin_re
 	block_x = (outer_rows < BLOCK_SIZE_X) ? outer_rows : BLOCK_SIZE_X;
 	grid_x = (outer_rows - 1) / block_x + 1;
 
-	int64_t *val_stack;
-	ValueType *type_stack;
+	int stack_size = 0;
 
-	checkCudaErrors(cudaMalloc(&val_stack, sizeof(int64_t) * block_x * grid_x * MAX_STACK_SIZE));
-	checkCudaErrors(cudaMalloc(&type_stack, sizeof(ValueType) * block_x * grid_x * MAX_STACK_SIZE));
+	for (int i = 0; i < search_exp_.size(); i++) {
+		if (search_exp_[i].height() > stack_size)
+			stack_size = search_exp_[i].height();
+	}
+
+	GNValue *stack;
+
+	if (stack_size > 0) {
+		checkCudaErrors(cudaMalloc(&stack, sizeof(GNValue) * block_x * grid_x * stack_size));
+	}
 
 	dim3 grid_size(grid_x, 1, 1);
 	dim3 block_size(block_x, 1, 1);
 	GTable search_table(NULL, search_exp_.size());
 	GTreeIndex *inner_idx = static_cast<GTreeIndex*>(inner_table_.getCurrentIndex());
 
-	constructSearchTable<<<grid_size, block_size, 0, stream>>>(outer_table_, search_table, outer_rows, search_exp_, val_stack, type_stack);
+	constructSearchTable<<<grid_size, block_size, 0, stream>>>(outer_table_, search_table, outer_rows, search_exp_, stack);
+	checkCudaErrors(cudaGetLastError());
 
-	IndexFilterLowerBound<<<grid_size, block_size, 0, stream>>>(search_table, *inner_idx, outer_rows, inner_rows, index_psum, res_bound, lookup_type_, prejoin_res_dev, val_stack, type_stack);
+	lowerBound<<<grid_size, block_size, 0, stream>>>(search_table, *inner_idx, outer_rows, inner_rows, index_psum, res_bound, lookup_type_, prejoin_res_dev);
+	checkCudaErrors(cudaGetLastError());
 
-	IndexFilterUpperBound<<<grid_size, block_size, 0, stream>>>(search_table, *inner_idx, outer_rows, inner_rows, index_psum, res_bound, lookup_type_, prejoin_res_dev, val_stack, type_stack);
-
-	//checkCudaErrors(cudaStreamSynchronize(stream));
+	upperBound<<<grid_size, block_size, 0, stream>>>(search_table, *inner_idx, outer_rows, inner_rows, index_psum, res_bound, lookup_type_, prejoin_res_dev);
+	checkCudaErrors(cudaGetLastError());
 
 	search_table.removeTable();
-	checkCudaErrors(cudaFree(val_stack));
-	checkCudaErrors(cudaFree(type_stack));
+
+	if (stack_size > 0) {
+		checkCudaErrors(cudaFree(stack));
+	}
 }
 
 
-extern "C" __global__ void ExpressionFilterDev2(GTable outer, GTable inner,
-												RESULT *in_bound, RESULT *out_bound,
-												ulong *mark_location, int size,
-												GExpression end_exp, GExpression post_exp, GExpression where_exp,
-												int64_t *val_stack, ValueType *type_stack
-												)
+__global__ void expFilter(GTable outer, GTable inner,
+							RESULT *in_bound, RESULT *out_bound,
+							ulong *mark_location, int size,
+							GExpression end_exp, GExpression post_exp, GExpression where_exp,
+							GNValue *stack)
 {
 	int index = threadIdx.x + blockIdx.x * blockDim.x;
 	int offset = blockDim.x * gridDim.x;
 	GNValue res;
 	GTuple outer_tuple, inner_tuple;
+	GStack tmp_stk(stack + index, offset);
 
 	for (int i = index; i < size; i += offset) {
 		res = GNValue::getTrue();
 		outer_tuple = outer.getGTuple(in_bound[i].lkey);
 		inner_tuple = inner.getGTuple(in_bound[i].rkey);
-		res = (end_exp.getSize() > 0) ? end_exp.evaluate(&outer_tuple, &inner_tuple, val_stack + index, type_stack + index, offset) : res;
-		res = (post_exp.getSize() > 0 && res.isTrue()) ? post_exp.evaluate(&outer_tuple, &inner_tuple, val_stack + index, type_stack + index, offset) : res;
-		res = (where_exp.getSize() > 0 && res.isTrue()) ? where_exp.evaluate(&outer_tuple, &inner_tuple, val_stack + index, type_stack + index, offset) : res;
+		tmp_stk.reset();
+
+		if (end_exp.size() > 0) {
+			res = end_exp.evaluate(outer_tuple, inner_tuple, tmp_stk);
+		}
+
+		if (post_exp.size() > 0) {
+			res = post_exp.evaluate(outer_tuple, inner_tuple, tmp_stk) && res;
+		}
+
+		if (where_exp.size() > 0) {
+			res = where_exp.evaluate(outer_tuple, inner_tuple, tmp_stk) && res;
+		}
 
 		out_bound[i].lkey = (res.isTrue()) ? in_bound[i].lkey : (-1);
 		out_bound[i].rkey = (res.isTrue()) ? in_bound[i].rkey : (-1);
@@ -636,7 +673,7 @@ extern "C" __global__ void ExpressionFilterDev2(GTable outer, GTable inner,
 	}
 }
 
-void GPUIJ::ExpressionFilter(RESULT *in_bound, RESULT *out_bound, ulong *mark_location, int size)
+void GPUIJ::expressionFilter(RESULT *in_bound, RESULT *out_bound, ulong *mark_location, int size)
 {
 	int partition_size = DEFAULT_PART_SIZE_;
 
@@ -645,29 +682,39 @@ void GPUIJ::ExpressionFilter(RESULT *in_bound, RESULT *out_bound, ulong *mark_lo
 	block_x = (size < BLOCK_SIZE_X) ? size : BLOCK_SIZE_X;
 	grid_x = (size <= partition_size) ? (size - 1)/block_x + 1 : (partition_size - 1)/block_x + 1;
 
-	int64_t *val_stack;
-	ValueType *type_stack;
+	int stack_size = end_expression_.height();
 
-	checkCudaErrors(cudaMalloc(&val_stack, sizeof(int64_t) * block_x * grid_x * MAX_STACK_SIZE));
-	checkCudaErrors(cudaMalloc(&type_stack, sizeof(ValueType) * block_x * grid_x * MAX_STACK_SIZE));
+	if (stack_size < post_expression_.height()) {
+		stack_size = post_expression_.height();
+	}
+
+	if (stack_size < where_expression_.height()) {
+		stack_size = post_expression_.height();
+	}
+
+	GNValue *stack = NULL;
+
+	if (stack_size > 0) {
+		checkCudaErrors(cudaMalloc(&stack, sizeof(GNValue) * block_x * grid_x * stack_size));
+	}
 
 	dim3 grid_size(grid_x, 1, 1);
 	dim3 block_size(block_x, 1, 1);
 
-	ExpressionFilterDev2<<<grid_size, block_size>>>(outer_table_, inner_table_,
-													in_bound, out_bound,
-													mark_location, size,
-													end_expression_, post_expression_, where_expression_,
-													val_stack, type_stack
-												);
+	expFilter<<<grid_size, block_size>>>(outer_table_, inner_table_,
+											in_bound, out_bound,
+											mark_location, size,
+											end_expression_, post_expression_, where_expression_,
+											stack);
 	checkCudaErrors(cudaGetLastError());
 	checkCudaErrors(cudaDeviceSynchronize());
 
-	checkCudaErrors(cudaFree(val_stack));
-	checkCudaErrors(cudaFree(type_stack));
+	if (stack_size > 0) {
+		checkCudaErrors(cudaFree(stack));
+	}
 }
 
-void GPUIJ::ExpressionFilter(RESULT *in_bound, RESULT *out_bound, ulong *mark_location, int size, cudaStream_t stream)
+void GPUIJ::expressionFilter(RESULT *in_bound, RESULT *out_bound, ulong *mark_location, int size, cudaStream_t stream)
 {
 	int partition_size = DEFAULT_PART_SIZE_;
 
@@ -676,39 +723,49 @@ void GPUIJ::ExpressionFilter(RESULT *in_bound, RESULT *out_bound, ulong *mark_lo
 	block_x = (size < BLOCK_SIZE_X) ? size : BLOCK_SIZE_X;
 	grid_x = (size <= partition_size) ? (size - 1)/block_x + 1 : (partition_size - 1)/block_x + 1;
 
-	int64_t *val_stack;
-	ValueType *type_stack;
+	int stack_size = end_expression_.height();
 
-	checkCudaErrors(cudaMalloc(&val_stack, sizeof(int64_t) * block_x * grid_x * MAX_STACK_SIZE));
-	checkCudaErrors(cudaMalloc(&type_stack, sizeof(ValueType) * block_x * grid_x * MAX_STACK_SIZE));
+	if (stack_size < post_expression_.height()) {
+		stack_size = post_expression_.height();
+	}
+
+	if (stack_size < where_expression_.height()) {
+		stack_size = post_expression_.height();
+	}
+
+	GNValue *stack = NULL;
+
+	if (stack_size > 0) {
+		checkCudaErrors(cudaMalloc(&stack, sizeof(GNValue) * block_x * grid_x * stack_size));
+	}
 
 	dim3 grid_size(grid_x, 1, 1);
 	dim3 block_size(block_x, 1, 1);
 
-	ExpressionFilterDev2<<<grid_size, block_size, 0, stream>>>(outer_table_, inner_table_,
-																in_bound, out_bound,
-																mark_location, size,
-																end_expression_, post_expression_, where_expression_,
-																val_stack, type_stack
-																);
+	expFilter<<<grid_size, block_size, 0, stream>>>(outer_table_, inner_table_,
+														in_bound, out_bound,
+														mark_location, size,
+														end_expression_, post_expression_, where_expression_,
+														stack);
 	checkCudaErrors(cudaGetLastError());
-	checkCudaErrors(cudaFree(val_stack));
-	checkCudaErrors(cudaFree(type_stack));
+
+	if (stack_size > 0) {
+		checkCudaErrors(cudaFree(stack));
+	}
 }
 
-extern "C" __global__ void ExpressionFilterDev(GTable outer, GTable inner,
-												int outer_rows,
-												RESULT *result, ulong *index_psum,
-												ulong *exp_psum, uint result_size,
-												GExpression end_dev, GExpression post_dev, GExpression where_dev,
-												ResBound *res_bound, bool *prejoin_res_dev,
-												int64_t *val_stack,
-												ValueType *type_stack
-												)
+__global__ void expFilter2(GTable outer, GTable inner,
+							int outer_rows,
+							RESULT *result, ulong *index_psum,
+							ulong *exp_psum, uint result_size,
+							GExpression end_dev, GExpression post_dev, GExpression where_dev,
+							ResBound *res_bound, bool *prejoin_res_dev,
+							GNValue *stack)
 {
 	int index = threadIdx.x + blockIdx.x * blockDim.x;
 	int offset = blockDim.x * gridDim.x;
 	GTuple outer_tuple, inner_tuple;
+	GStack tmp_stk(stack + index, offset);
 
 	for (int i = index; i < outer_rows; i += offset) {
 		exp_psum[i] = 0;
@@ -720,13 +777,23 @@ extern "C" __global__ void ExpressionFilterDev(GTable outer, GTable inner,
 		res_left = res_bound[i].left;
 		res_right = res_bound[i].right;
 
+		tmp_stk.reset();
+
 		while (res_left >= 0 && res_left <= res_right && writeloc < result_size) {
 			outer_tuple = outer.getGTuple(res_left);
 			inner_tuple = inner.getGTuple(res_right);
 
-			res = (end_dev.getSize() > 0) ? end_dev.evaluate(&outer_tuple, &inner_tuple, val_stack + index, type_stack + index, offset) : res;
-			res = (post_dev.getSize() > 0 && res.isTrue()) ? end_dev.evaluate(&outer_tuple, &inner_tuple, val_stack + index, type_stack + index, offset) : res;
-			res = (where_dev.getSize() > 0 && res.isTrue()) ? where_dev.evaluate(&outer_tuple, &inner_tuple, val_stack + index, type_stack + index, offset) : res;
+			if (end_dev.size() > 0) {
+				res = end_dev.evaluate(outer_tuple, inner_tuple, tmp_stk);
+			}
+
+			if (post_dev.size() > 0) {
+				res = end_dev.evaluate(outer_tuple, inner_tuple, tmp_stk) && res;
+			}
+
+			if (where_dev.size() > 0) {
+				res = where_dev.evaluate(outer_tuple, inner_tuple, tmp_stk) && res;
+			}
 
 			result[writeloc].lkey = (res.isTrue()) ? i : (-1);
 			result[writeloc].rkey = (res.isTrue()) ? res_left : (-1);
@@ -742,7 +809,7 @@ extern "C" __global__ void ExpressionFilterDev(GTable outer, GTable inner,
 	}
 }
 
-void GPUIJ::ExpressionFilter(ulong *index_psum, ulong *exp_psum, RESULT *result, int result_size, ResBound *res_bound, bool *prejoin_res_dev)
+void GPUIJ::expressionFilter(ulong *index_psum, ulong *exp_psum, RESULT *result, int result_size, ResBound *res_bound, bool *prejoin_res_dev)
 {
 	int outer_rows = outer_table_.getCurrentRowNum();
 	int partition_size = DEFAULT_PART_SIZE_;
@@ -751,34 +818,43 @@ void GPUIJ::ExpressionFilter(ulong *index_psum, ulong *exp_psum, RESULT *result,
 	block_x = (outer_rows < BLOCK_SIZE_X) ? outer_rows : BLOCK_SIZE_X;
 	grid_x = (outer_rows < partition_size) ? (outer_rows - 1)/block_x + 1 : (partition_size - 1)/block_x + 1;
 
-	int64_t *val_stack;
-	ValueType *type_stack;
+	int stack_size = end_expression_.height();
 
-	checkCudaErrors(cudaMalloc(&val_stack, sizeof(int64_t) * block_x * grid_x * MAX_STACK_SIZE));
-	checkCudaErrors(cudaMalloc(&type_stack, sizeof(ValueType) * block_x * grid_x * MAX_STACK_SIZE));
+	if (stack_size < post_expression_.height()) {
+		stack_size = post_expression_.height();
+	}
+
+	if (stack_size < where_expression_.height()) {
+		stack_size = post_expression_.height();
+	}
+
+	GNValue *stack = NULL;
+
+	if (stack_size > 0) {
+		checkCudaErrors(cudaMalloc(&stack, sizeof(GNValue) * block_x * grid_x * stack_size));
+	}
 
 	dim3 grid_size(grid_x, 1, 1);
 	dim3 block_size(block_x, 1, 1);
 
-	ExpressionFilterDev<<<grid_size, block_size>>>(outer_table_, inner_table_,
+	expFilter2<<<grid_size, block_size>>>(outer_table_, inner_table_,
 													outer_rows,
 													result, index_psum,
 													exp_psum,
 													result_size,
 													end_expression_, post_expression_, where_expression_,
-													res_bound, prejoin_res_dev,
-													val_stack, type_stack
+													res_bound, prejoin_res_dev, stack
 													);
 
 	checkCudaErrors(cudaGetLastError());
 	checkCudaErrors(cudaDeviceSynchronize());
 
-	checkCudaErrors(cudaFree(val_stack));
-	checkCudaErrors(cudaFree(type_stack));
-
+	if (stack_size > 0) {
+		checkCudaErrors(cudaFree(stack));
+	}
 }
 
-void GPUIJ::ExpressionFilter(ulong *index_psum, ulong *exp_psum, RESULT *result, int result_size, ResBound *res_bound, bool *prejoin_res_dev, cudaStream_t stream)
+void GPUIJ::expressionFilter(ulong *index_psum, ulong *exp_psum, RESULT *result, int result_size, ResBound *res_bound, bool *prejoin_res_dev, cudaStream_t stream)
 {
 	int outer_rows = outer_table_.getCurrentRowNum();
 	int partition_size = DEFAULT_PART_SIZE_;
@@ -787,33 +863,41 @@ void GPUIJ::ExpressionFilter(ulong *index_psum, ulong *exp_psum, RESULT *result,
 	block_x = (outer_rows < BLOCK_SIZE_X) ? outer_rows : BLOCK_SIZE_X;
 	grid_x = (outer_rows < partition_size) ? (outer_rows - 1)/block_x + 1 : (partition_size - 1)/block_x + 1;
 
+	int stack_size = end_expression_.height();
 
-	int64_t *val_stack;
-	ValueType *type_stack;
+	if (stack_size < post_expression_.height()) {
+		stack_size = post_expression_.height();
+	}
 
-	checkCudaErrors(cudaMalloc(&val_stack, sizeof(int64_t) * block_x * grid_x * MAX_STACK_SIZE));
-	checkCudaErrors(cudaMalloc(&type_stack, sizeof(ValueType) * block_x * grid_x * MAX_STACK_SIZE));
+	if (stack_size < where_expression_.height()) {
+		stack_size = post_expression_.height();
+	}
+
+	GNValue *stack = NULL;
+
+	if (stack_size > 0) {
+		checkCudaErrors(cudaMalloc(&stack, sizeof(GNValue) * block_x * grid_x * stack_size));
+	}
 
 	dim3 grid_size(grid_x, 1, 1);
 	dim3 block_size(block_x, 1, 1);
 
-	ExpressionFilterDev<<<grid_size, block_size, 0, stream>>>(outer_table_, inner_table_,
-																outer_rows,
-																result, index_psum,
-																exp_psum, result_size,
-																end_expression_, post_expression_, where_expression_,
-																res_bound, prejoin_res_dev,
-																val_stack, type_stack
-																);
+	expFilter2<<<grid_size, block_size, 0, stream>>>(outer_table_, inner_table_,
+														outer_rows,
+														result, index_psum,
+														exp_psum, result_size,
+														end_expression_, post_expression_, where_expression_,
+														res_bound, prejoin_res_dev, stack);
 
 	checkCudaErrors(cudaGetLastError());
 	checkCudaErrors(cudaStreamSynchronize(stream));
 
-	checkCudaErrors(cudaFree(val_stack));
-	checkCudaErrors(cudaFree(type_stack));
+	if (stack_size > 0) {
+		checkCudaErrors(cudaFree(stack));
+	}
 }
 
-void GPUIJ::Rebalance(ulong *in, ResBound *in_bound, RESULT **out_bound, int in_size, ulong *out_size, cudaStream_t stream)
+void GPUIJ::rebalance(ulong *in, ResBound *in_bound, RESULT **out_bound, int in_size, ulong *out_size, cudaStream_t stream)
 {
 	GUtilities::ExclusiveScan(in, in_size, out_size, stream);
 
@@ -827,7 +911,7 @@ void GPUIJ::Rebalance(ulong *in, ResBound *in_bound, RESULT **out_bound, int in_
 
 	checkCudaErrors(cudaMemsetAsync(location, 0, sizeof(ulong) * (*out_size), stream));
 
-	GUtilities::MarkLocation(location, in, in_size, stream);
+	GUtilities::markLocation(location, in, in_size, stream);
 
 	GUtilities::InclusiveScan(location, *out_size, stream);
 
@@ -836,15 +920,15 @@ void GPUIJ::Rebalance(ulong *in, ResBound *in_bound, RESULT **out_bound, int in_
 	checkCudaErrors(cudaMalloc(&local_offset, *out_size * sizeof(ulong)));
 	checkCudaErrors(cudaMalloc(out_bound, *out_size * sizeof(RESULT)));
 
-	GUtilities::ComputeOffset(in, location, local_offset, *out_size, stream);
+	GUtilities::computeOffset(in, location, local_offset, *out_size, stream);
 
-	Decompose(in_bound, *out_bound, location, local_offset, *out_size, stream);
+	decompose(in_bound, *out_bound, location, local_offset, *out_size, stream);
 
 	checkCudaErrors(cudaFree(local_offset));
 	checkCudaErrors(cudaFree(location));
 }
 
-void GPUIJ::Rebalance(ulong *in, ResBound *in_bound, RESULT **out_bound, int in_size, ulong *out_size)
+void GPUIJ::rebalance(ulong *in, ResBound *in_bound, RESULT **out_bound, int in_size, ulong *out_size)
 {
 	GUtilities::ExclusiveScan(in, in_size, out_size);
 
@@ -860,18 +944,18 @@ void GPUIJ::Rebalance(ulong *in, ResBound *in_bound, RESULT **out_bound, int in_
 
 	checkCudaErrors(cudaDeviceSynchronize());
 
-	GUtilities::MarkLocation(location, in, in_size);
+	GUtilities::markLocation(location, in, in_size);
 
-	GUtilities::InclusiveScan(location, *out_size);
+	GUtilities::inclusiveScan(location, *out_size);
 
 	ulong *local_offset;
 
 	checkCudaErrors(cudaMalloc(&local_offset, *out_size * sizeof(ulong)));
 	checkCudaErrors(cudaMalloc(out_bound, *out_size * sizeof(RESULT)));
 
-	GUtilities::ComputeOffset(in, location, local_offset, *out_size);
+	GUtilities::computeOffset(in, location, local_offset, *out_size);
 
-	Decompose(in_bound, *out_bound, location, local_offset, *out_size);
+	decompose(in_bound, *out_bound, location, local_offset, *out_size);
 
 	checkCudaErrors(cudaFree(local_offset));
 	checkCudaErrors(cudaFree(location));

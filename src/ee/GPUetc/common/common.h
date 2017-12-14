@@ -2,7 +2,6 @@
 #define NODEDATA_H
 
 #include "common/types.h"
-//#include "gnvalue.h"
 
 namespace voltdb {
 

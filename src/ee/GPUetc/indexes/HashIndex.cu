@@ -4,8 +4,6 @@
 #include <helper_functions.h>
 #include "GPUetc/indexes/KeyIndex.h"
 #include "GPUetc/indexes/HashIndex.h"
-#include "GPUetc/common/GPUTUPLE.h"
-#include "GPUetc/executors/utilities.h"
 
 namespace voltdb {
 GHashIndex::GHashIndex() {

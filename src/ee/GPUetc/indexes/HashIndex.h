@@ -12,12 +12,12 @@ namespace voltdb {
 class GHashIndexKey: public GKeyIndex {
 public:
 #define MASK_BITS 0x9e3779b9
-	__forceinline__ __device__ GHashIndexKey() {
+	CUDAH GHashIndexKey() {
 		packed_key_ = NULL;
 		size_ = 0;
 	}
 
-	__forceinline__ __host__ __device__ GHashIndexKey(uint64_t *packed_key, int size) {
+	CUDAH GHashIndexKey(uint64_t *packed_key, int size) {
 		packed_key_ = packed_key;
 		size_ = size;
 	}
@@ -26,7 +26,7 @@ public:
 	 * Keys are accumulated to packed_key based on the type of the columns.
 	 * Used for constructing keys from the index table.
 	 */
-	__forceinline__ __device__ bool createKey(int64_t *tuple, GColumnInfo *schema, int *key_indices, int key_size) {
+	CUDAH bool createKey(int64_t *tuple, GColumnInfo *schema, int *key_indices, int key_size) {
 		if (size_ != key_size) {
 			return false;
 		}
@@ -103,7 +103,7 @@ public:
 	 * Keys are accumulated to packed_key.
 	 * Used for constructing keys from the non-index table.
 	 */
-	__forceinline__ __device__ bool createKey(int64_t *tuple, GColumnInfo *schema, int column_num) {
+	CUDAH bool createKey(int64_t *tuple, GColumnInfo *schema, int column_num) {
 		if (size_ != column_num)
 			return false;
 
@@ -180,7 +180,7 @@ public:
 	 * Keys are accumulated to packed_key.
 	 * Used for constructing keys from the non-index table.
 	 */
-	__forceinline__ __device__ bool createKey(GTuple tuple) {
+	CUDAH bool createKey(GTuple tuple) {
 		if (size_ != tuple.columns_)
 			return false;
 
@@ -256,7 +256,7 @@ public:
 	/* Constructing key object from a tuple.
 	 * Used for constructing keys from the index table.
 	 */
-	__forceinline__ __device__ bool createKey(GTuple tuple, int *key_indices, int key_size) {
+	CUDAH bool createKey(GTuple tuple, int *key_indices, int key_size) {
 		if (size_ != key_size)
 			return false;
 
@@ -329,7 +329,7 @@ public:
 		return true;
 	}
 
-	__forceinline__ __host__ __device__ uint64_t KeyHasher() {
+	CUDAH uint64_t KeyHasher() {
 		uint64_t seed = 0;
 
 		for (int i = 0; i < size_; i++) {
@@ -362,28 +362,28 @@ public:
 
 	int getBucketNum();
 
-	__forceinline__ __device__ GHashIndexKey getKeyAtSortedIndex(int key_index) {
+	CUDAH GHashIndexKey getKeyAtSortedIndex(int key_index) {
 		return GHashIndexKey(packed_key_ + sorted_idx_[key_index] * key_size_, key_size_);
 	}
 
-	__forceinline__ __device__ GHashIndexKey getKeyAtIndex(int key_index) {
+	CUDAH GHashIndexKey getKeyAtIndex(int key_index) {
 		return GHashIndexKey(packed_key_ + key_index * key_size_, key_size_);
 	}
 
-	__forceinline__ __device__ int getKeyRows();
+	CUDAH int getKeyRows();
 
-	__forceinline__ __host__ __device__ int *getSortedIdx();
+	CUDAH int *getSortedIdx();
 
-	__forceinline__ __device__ int *getKeyIdx();
+	CUDAH int *getKeyIdx();
 
-	__forceinline__ __device__ int getKeySize();
+	CUDAH int getKeySize();
 
-	__forceinline__ __device__ int *getBucketLocations();
+	CUDAH int *getBucketLocations();
 
-	__forceinline__ __device__ void insertKeyTupleNoSort(GTuple new_key, int location);
+	CUDAH void insertKeyTupleNoSort(GTuple new_key, int location);
 
-	__forceinline__ __device__ int getBucketLocation(int bucket_idx);
-	__forceinline__ __device__ int getColumns() {
+	CUDAH int getBucketLocation(int bucket_idx);
+	CUDAH int getColumns() {
 		return key_size_;
 	}
 
@@ -402,33 +402,33 @@ protected:
 };
 
 
-__forceinline__ __device__ int GHashIndex::getKeyRows()
+CUDAH int GHashIndex::getKeyRows()
 {
 	return key_num_;
 }
 
-__forceinline__ __host__ __device__ int *GHashIndex::getSortedIdx()
+CUDAH int *GHashIndex::getSortedIdx()
 {
 	return sorted_idx_;
 }
 
-__forceinline__ __device__ int *GHashIndex::getKeyIdx()
+CUDAH int *GHashIndex::getKeyIdx()
 {
 	return key_idx_;
 }
 
-__forceinline__ __device__ int GHashIndex::getKeySize()
+CUDAH int GHashIndex::getKeySize()
 {
 	return key_size_;
 }
 
 
-__forceinline__ __device__ int *GHashIndex::getBucketLocations()
+CUDAH int *GHashIndex::getBucketLocations()
 {
 	return bucket_locations_;
 }
 
-__forceinline__ __device__ void GHashIndex::insertKeyTupleNoSort(GTuple tuple, int location)
+CUDAH void GHashIndex::insertKeyTupleNoSort(GTuple tuple, int location)
 {
 	GHashIndexKey key(packed_key_ + location * key_size_, key_size_);
 
@@ -437,7 +437,7 @@ __forceinline__ __device__ void GHashIndex::insertKeyTupleNoSort(GTuple tuple, i
 	sorted_idx_[location] = location;
 }
 
-__forceinline__ __device__ int GHashIndex::getBucketLocation(int bucket_idx)
+CUDAH int GHashIndex::getBucketLocation(int bucket_idx)
 {
 	return bucket_locations_[bucket_idx];
 }

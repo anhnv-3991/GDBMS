@@ -3,9 +3,6 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include "GPUetc/common/GNValue.h"
-#include "GPUetc/common/GPUTUPLE.h"
-#include "GPUetc/common/nodedata.h"
 #include "GPUetc/storage/gtable.h"
 #include "GPUetc/expressions/gexpression.h"
 
@@ -15,7 +12,11 @@
 #include <vector>
 
 namespace voltdb {
+
+
+
 class GExecutorProjection {
+	using GExpression::ExpressionNode;
 public:
 	GExecutorProjection();
 	GExecutorProjection(GTable *output_table, GTable input_table, int *tuple_array, int *param_array, GNValue *param, std::vector<ExpressionNode *> expression);

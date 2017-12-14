@@ -5,9 +5,6 @@
 #include <cuda.h>
 #include <sys/time.h>
 #include <vector>
-#include "GPUetc/common/nodedata.h"
-#include "GPUetc/common/GPUTUPLE.h"
-#include "GPUetc/common/GNValue.h"
 #include "GPUetc/storage/gtable.h"
 #include "GPUetc/expressions/gexpression.h"
 
@@ -15,6 +12,7 @@
 namespace voltdb {
 
 class GPUHJ {
+	using GExpression::ExpressionNode;
 public:
 	GPUHJ();
 
@@ -32,7 +30,7 @@ public:
 
 	~GPUHJ();
 
-	bool join();
+	bool execute();
 
 	void getResult(RESULT *output) const;
 
@@ -64,18 +62,18 @@ private:
 	void profiling();
 	uint getPartitionSize() const;
 
-	void IndexCount(ulong *index_count, ResBound *out_bound);
-	void IndexCount(ulong *index_count, ResBound *out_bound, cudaStream_t stream);
+	void indexCount(ulong *index_count, ResBound *out_bound);
+	void indexCount(ulong *index_count, ResBound *out_bound, cudaStream_t stream);
 
-	void HashJoinLegacy(RESULT *in_bound, RESULT *out_bound, ulong *mark_location, int size);
-	void HashJoinLegacy(RESULT *in_bound, RESULT *out_bound, ulong *mark_location, int size, cudaStream_t stream);
+	void expressionFilter(RESULT *in_bound, RESULT *out_bound, ulong *mark_location, int size);
+	void expressionFilter(RESULT *in_bound, RESULT *out_bound, ulong *mark_location, int size, cudaStream_t stream);
 
 
 	void decompose(RESULT *output, ResBound *in_bound, ulong *in_location, ulong *local_offset, int size);
 	void decompose(RESULT *output, ResBound *in_bound, ulong *in_location, ulong *local_offset, int size, cudaStream_t stream);
 
-	void Rebalance(ulong *index_count, ResBound *in_bound, RESULT **out_bound, int in_size, ulong *out_size);
-	void Rebalance(ulong *index_count, ResBound *in_bound, RESULT **out_bound, int in_size, ulong *out_size, cudaStream_t stream);
+	void rebalance(ulong *index_count, ResBound *in_bound, RESULT **out_bound, int in_size, ulong *out_size);
+	void rebalance(ulong *index_count, ResBound *in_bound, RESULT **out_bound, int in_size, ulong *out_size, cudaStream_t stream);
 };
 
 }

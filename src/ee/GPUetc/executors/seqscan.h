@@ -3,8 +3,6 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include "GPUetc/common/GPUTUPLE.h"
-#include "GPUetc/common/GNValue.h"
 #include "GPUetc/storage/gtable.h"
 #include "GPUetc/expressions/gexpression.h"
 #include <vector>
@@ -12,8 +10,9 @@
 
 
 namespace voltdb {
+
 class GpuSeqScan {
-public:
+	using GExpression::ExpressionNode;
 public:
 	GpuSeqScan();
 

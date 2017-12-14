@@ -1,6 +1,4 @@
 #include "utilities.h"
-#include "GPUetc/common/GNValue.h"
-#include "GPUetc/common/nodedata.h"
 #include "GPUetc/storage/gtable.h"
 
 #include <stdio.h>
@@ -20,7 +18,7 @@
 
 namespace voltdb {
 
-extern "C" __global__ void markNonZeros(ulong *input, int size, ulong *mark)
+__global__ void markNonZerosDev(ulong *input, int size, ulong *mark)
 {
 	int index = threadIdx.x + blockIdx.x * blockDim.x;
 
@@ -29,7 +27,7 @@ extern "C" __global__ void markNonZeros(ulong *input, int size, ulong *mark)
 	}
 }
 
-void GUtilities::MarkNonZeros(ulong *input, int size, ulong *output)
+void GUtilities::markNonZeros(ulong *input, int size, ulong *output)
 {
 	int block_x, grid_x;
 
@@ -39,13 +37,13 @@ void GUtilities::MarkNonZeros(ulong *input, int size, ulong *output)
 	dim3 block_size(block_x, 1, 1);
 	dim3 grid_size(grid_x, 1, 1);
 
-	markNonZeros<<<grid_size, block_size>>>(input, size, output);
+	markNonZerosDev<<<grid_size, block_size>>>(input, size, output);
 
 	checkCudaErrors(cudaGetLastError());
 	checkCudaErrors(cudaDeviceSynchronize());
 }
 
-void GUtilities::MarkNonZeros(ulong *input, int size, ulong *output, cudaStream_t stream)
+void GUtilities::markNonZeros(ulong *input, int size, ulong *output, cudaStream_t stream)
 {
 	int block_x, grid_x;
 
@@ -55,13 +53,13 @@ void GUtilities::MarkNonZeros(ulong *input, int size, ulong *output, cudaStream_
 	dim3 block_size(block_x, 1, 1);
 	dim3 grid_size(grid_x, 1, 1);
 
-	markNonZeros<<<grid_size, block_size, 0, stream>>>(input, size, output);
+	markNonZerosDev<<<grid_size, block_size, 0, stream>>>(input, size, output);
 
 	checkCudaErrors(cudaGetLastError());
 	checkCudaErrors(cudaStreamSynchronize(stream));
 }
 
-extern "C" __global__ void removeZeros(ulong *input, ResBound *in_bound, ulong *output, ResBound *out_bound, ulong *output_location, int size)
+__global__ void removeZerosDev(ulong *input, ResBound *in_bound, ulong *output, ResBound *out_bound, ulong *output_location, int size)
 {
 	int index = threadIdx.x + blockIdx.x * blockDim.x;
 
@@ -74,7 +72,7 @@ extern "C" __global__ void removeZeros(ulong *input, ResBound *in_bound, ulong *
 	}
 }
 
-void GUtilities::RemoveZeros(ulong *input, ResBound *in_bound, ulong *output, ResBound *out_bound, ulong *output_location, int size)
+void GUtilities::removeZeros(ulong *input, ResBound *in_bound, ulong *output, ResBound *out_bound, ulong *output_location, int size)
 {
 	int block_x, grid_x;
 
@@ -85,12 +83,12 @@ void GUtilities::RemoveZeros(ulong *input, ResBound *in_bound, ulong *output, Re
 	dim3 block_size(block_x, 1, 1);
 
 
-	removeZeros<<<grid_size, block_size>>>(input, in_bound, output, out_bound, output_location, size);
+	removeZerosDev<<<grid_size, block_size>>>(input, in_bound, output, out_bound, output_location, size);
 	checkCudaErrors(cudaGetLastError());
 	checkCudaErrors(cudaDeviceSynchronize());
 }
 
-void GUtilities::RemoveZeros(ulong *input, ResBound *in_bound, ulong *output, ResBound *out_bound, ulong *output_location, int size, cudaStream_t stream)
+void GUtilities::removeZeros(ulong *input, ResBound *in_bound, ulong *output, ResBound *out_bound, ulong *output_location, int size, cudaStream_t stream)
 {
 	int block_x, grid_x;
 
@@ -101,12 +99,12 @@ void GUtilities::RemoveZeros(ulong *input, ResBound *in_bound, ulong *output, Re
 	dim3 block_size(block_x, 1, 1);
 
 
-	removeZeros<<<grid_size, block_size, 0, stream>>>(input, in_bound, output, out_bound, output_location, size);
+	removeZerosDev<<<grid_size, block_size, 0, stream>>>(input, in_bound, output, out_bound, output_location, size);
 	checkCudaErrors(cudaGetLastError());
 	checkCudaErrors(cudaStreamSynchronize(stream));
 }
 
-extern "C" __global__ void markTmpLocation(ulong *tmp_location, ulong *input, int size)
+__global__ void markTmpLocationDev(ulong *tmp_location, ulong *input, int size)
 {
 	int index = threadIdx.x + blockIdx.x * blockDim.x;
 
@@ -115,7 +113,7 @@ extern "C" __global__ void markTmpLocation(ulong *tmp_location, ulong *input, in
 	}
 }
 
-void GUtilities::MarkTmpLocation(ulong *tmp_location, ulong *input, int size)
+void GUtilities::markTmpLocation(ulong *tmp_location, ulong *input, int size)
 {
 	int block_x, grid_x;
 
@@ -125,13 +123,13 @@ void GUtilities::MarkTmpLocation(ulong *tmp_location, ulong *input, int size)
 	dim3 grid_size(grid_x, 1, 1);
 	dim3 block_size(block_x, 1, 1);
 
-	markTmpLocation<<<grid_size, block_size>>>(tmp_location, input, size);
+	markTmpLocationDev<<<grid_size, block_size>>>(tmp_location, input, size);
 
 	checkCudaErrors(cudaGetLastError());
 	checkCudaErrors(cudaDeviceSynchronize());
 }
 
-void GUtilities::MarkTmpLocation(ulong *tmp_location, ulong *input, int size, cudaStream_t stream)
+void GUtilities::markTmpLocation(ulong *tmp_location, ulong *input, int size, cudaStream_t stream)
 {
 	int block_x, grid_x;
 
@@ -141,13 +139,13 @@ void GUtilities::MarkTmpLocation(ulong *tmp_location, ulong *input, int size, cu
 	dim3 grid_size(grid_x, 1, 1);
 	dim3 block_size(block_x, 1, 1);
 
-	markTmpLocation<<<grid_size, block_size, 0, stream>>>(tmp_location, input, size);
+	markTmpLocationDev<<<grid_size, block_size, 0, stream>>>(tmp_location, input, size);
 
 	checkCudaErrors(cudaGetLastError());
 	checkCudaErrors(cudaStreamSynchronize(stream));
 }
 
-extern "C" __global__ void markLocation1(ulong *location, ulong *input, int size)
+__global__ void markLocation1(ulong *location, ulong *input, int size)
 {
 	int index = threadIdx.x + blockIdx.x * blockDim.x;
 
@@ -158,7 +156,7 @@ extern "C" __global__ void markLocation1(ulong *location, ulong *input, int size
 
 }
 
-extern "C" __global__ void markLocation2(ulong *location, ulong *input, int size)
+__global__ void markLocation2(ulong *location, ulong *input, int size)
 {
 	int index = threadIdx.x + blockIdx.x * blockDim.x;
 
@@ -168,7 +166,7 @@ extern "C" __global__ void markLocation2(ulong *location, ulong *input, int size
 	}
 }
 
-void GUtilities::MarkLocation(ulong *location, ulong *input, int size)
+void GUtilities::markLocation(ulong *location, ulong *input, int size)
 {
 	int block_x, grid_x;
 
@@ -179,13 +177,15 @@ void GUtilities::MarkLocation(ulong *location, ulong *input, int size)
 	dim3 block_size(block_x, 1, 1);
 
 	markLocation1<<<grid_size, block_size>>>(location, input, size);
-	markLocation2<<<grid_size, block_size>>>(location, input, size);
-
 	checkCudaErrors(cudaGetLastError());
+
+	markLocation2<<<grid_size, block_size>>>(location, input, size);
+	checkCudaErrors(cudaGetLastError());
+
 	checkCudaErrors(cudaDeviceSynchronize());
 }
 
-void GUtilities::MarkLocation(ulong *location, ulong *input, int size, cudaStream_t stream)
+void GUtilities::markLocation(ulong *location, ulong *input, int size, cudaStream_t stream)
 {
 	int block_x, grid_x;
 
@@ -196,12 +196,13 @@ void GUtilities::MarkLocation(ulong *location, ulong *input, int size, cudaStrea
 	dim3 block_size(block_x, 1, 1);
 
 	markLocation1<<<grid_size, block_size, 0, stream>>>(location, input, size);
-	markLocation2<<<grid_size, block_size, 0, stream>>>(location, input, size);
+	checkCudaErrors(cudaGetLastError());
 
+	markLocation2<<<grid_size, block_size, 0, stream>>>(location, input, size);
 	checkCudaErrors(cudaGetLastError());
 }
 
-extern "C" __global__ void computeOffset(ulong *input1, ulong *input2, ulong *out, int size)
+__global__ void computeOffsetDev(ulong *input1, ulong *input2, ulong *out, int size)
 {
 	ulong index = threadIdx.x + blockIdx.x * blockDim.x;
 
@@ -210,7 +211,7 @@ extern "C" __global__ void computeOffset(ulong *input1, ulong *input2, ulong *ou
 	}
 }
 
-void GUtilities::ComputeOffset(ulong *input1, ulong *input2, ulong *out, int size)
+void GUtilities::computeOffset(ulong *input1, ulong *input2, ulong *out, int size)
 {
 	int block_x, grid_x;
 
@@ -220,13 +221,13 @@ void GUtilities::ComputeOffset(ulong *input1, ulong *input2, ulong *out, int siz
 	dim3 grid_size(grid_x, 1, 1);
 	dim3 block_size(block_x, 1, 1);
 
-	computeOffset<<<grid_size, block_size>>>(input1, input2, out, size);
+	computeOffsetDev<<<grid_size, block_size>>>(input1, input2, out, size);
 
 	checkCudaErrors(cudaGetLastError());
 	checkCudaErrors(cudaDeviceSynchronize());
 }
 
-void GUtilities::ComputeOffset(ulong *input1, ulong *input2, ulong *out, int size, cudaStream_t stream)
+void GUtilities::computeOffset(ulong *input1, ulong *input2, ulong *out, int size, cudaStream_t stream)
 {
 	int block_x, grid_x;
 
@@ -236,8 +237,7 @@ void GUtilities::ComputeOffset(ulong *input1, ulong *input2, ulong *out, int siz
 	dim3 grid_size(grid_x, 1, 1);
 	dim3 block_size(block_x, 1, 1);
 
-	computeOffset<<<grid_size, block_size, 0, stream>>>(input1, input2, out, size);
-
+	computeOffsetDev<<<grid_size, block_size, 0, stream>>>(input1, input2, out, size);
 	checkCudaErrors(cudaGetLastError());
 }
 
@@ -403,7 +403,6 @@ void GUtilities::RemoveEmptyResult(RESULT *out, RESULT *in, ulong *location, int
 	removeEmptyResult2<<<grid_size, block_size, 0, stream>>>(out, in, location, size);
 
 	checkCudaErrors(cudaGetLastError());
-	//checkCudaErrors(cudaStreamSynchronize(stream));
 }
 
 

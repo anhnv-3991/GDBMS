@@ -30,6 +30,7 @@ public:
 	CUDAH GExpression() {
 		expression_ = NULL;
 		size_ = 0;
+		height_ = 0;
 	}
 
 	/* Create a new expression, allocate the GPU memory for
@@ -42,6 +43,7 @@ public:
 	CUDAH GExpression(GTreeNode *expression, int size) {
 		expression_ = expression;
 		size_ = size;
+		height_ = 0;
 	}
 
 	/* Create an expression from an input pointer-based tree expression */
@@ -49,9 +51,14 @@ public:
 
 	void free();
 
-	CUDAD int getSize()
+	CUDAH int size()
 	{
 		return size_;
+	}
+
+	CUDAH int height()
+	{
+		return height_;
 	}
 
 	CUDAD GNValue evaluate(int64_t *outer_tuple, int64_t *inner_tuple, GColumnInfo *outer_schema, GColumnInfo *inner_schema, GNValue *stack, int offset)
@@ -249,6 +256,83 @@ public:
 	}
 
 
+	CUDAD GNValue evaluate(GTuple outer_tuple, GTuple inner_tuple, GStack stack)
+	{
+		for (int i = 0; i < size_; i++) {
+			GTreeNode tmp = expression_[i];
+
+			switch (tmp.type) {
+				case EXPRESSION_TYPE_VALUE_TUPLE: {
+					if (tmp.tuple_idx == 0) {
+						stack.push(outer_tuple[tmp.column_idx]);
+					} else if (tmp.tuple_idx == 1) {
+						stack.push(inner_tuple[tmp.column_idx]);
+					}
+					break;
+				}
+				case EXPRESSION_TYPE_VALUE_CONSTANT:
+				case EXPRESSION_TYPE_VALUE_PARAMETER: {
+					stack.push(tmp.value);
+					break;
+				}
+				case EXPRESSION_TYPE_CONJUNCTION_AND: {
+					stack.push(stack.pop() && stack.pop());
+					break;
+				}
+				case EXPRESSION_TYPE_CONJUNCTION_OR: {
+					stack.push(stack.pop() || stack.pop());
+					break;
+				}
+				case EXPRESSION_TYPE_COMPARE_EQUAL: {
+					stack.push(stack.pop() == stack.pop());
+					break;
+				}
+				case EXPRESSION_TYPE_COMPARE_NOTEQUAL: {
+					stack.push(stack.pop() != stack.pop());
+					break;
+				}
+				case EXPRESSION_TYPE_COMPARE_LESSTHAN: {
+					stack.push(stack.pop() < stack.pop());
+					break;
+				}
+				case EXPRESSION_TYPE_COMPARE_LESSTHANOREQUALTO: {
+					stack.push(stack.pop() <= stack.pop());
+					break;
+				}
+				case EXPRESSION_TYPE_COMPARE_GREATERTHAN: {
+					stack.push(stack.pop() > stack.pop());
+					break;
+				}
+				case EXPRESSION_TYPE_COMPARE_GREATERTHANOREQUALTO: {
+					stack.push(stack.pop() >= stack.pop());
+					break;
+				}
+				case EXPRESSION_TYPE_OPERATOR_PLUS: {
+					stack.push(stack.pop() + stack.pop());
+					break;
+				}
+				case EXPRESSION_TYPE_OPERATOR_MINUS: {
+					stack.push(stack.pop() - stack.pop());
+					break;
+				}
+				case EXPRESSION_TYPE_OPERATOR_DIVIDE: {
+					stack.push(stack.pop() / stack.pop());
+					break;
+				}
+				case EXPRESSION_TYPE_OPERATOR_MULTIPLY: {
+					stack.push(stack.pop() * stack.pop());
+					break;
+				}
+				default: {
+					return GNValue::getFalse();
+				}
+			}
+		}
+
+		return stack.pop();
+	}
+
+
 	static int getExpressionLength(ExpressionNode *expression);
 
 	std::string debug() const;
@@ -257,10 +341,13 @@ private:
 
 	bool buildPostExpression(GTreeNode *output_expression, ExpressionNode *expression, int *index);
 
+	int computeHeight(ExpressionNode *expression);
+
 	std::string printNode(GTreeNode node, int index) const;
 
 	GTreeNode *expression_;
 	int size_;
+	int height_;
 };
 
 class GExpressionVector {
@@ -317,6 +404,59 @@ CUDAH GExpression GExpressionVector::operator[](int exp_idx) const
 		return GExpression();
 
 	return GExpression(expression_ + exp_size_[exp_idx], exp_size_[exp_idx + 1] - exp_size_[exp_idx]);
+}
+
+class GStack {
+public:
+	CUDAH GStack();
+
+	CUDAH GStack(GNValue *buffer, int stride);
+
+	CUDAH GNValue pop();
+
+	CUDAH void push(GNValue new_val);
+
+	CUDAH void reset();
+
+private:
+	GNValue *buffer_;
+	int top_;
+	int stride_;
+};
+
+CUDAH GStack::GStack()
+{
+	buffer_ = NULL;
+	top_ = 0;
+	stride_ = 0;
+}
+
+CUDAH GStack::GStack(GNValue *buffer, int stride)
+{
+	buffer_ = buffer;
+	top_ = 0;
+	stride_ = stride;
+}
+
+CUDAH GNValue GStack::pop()
+{
+	if (top_ > 0)
+		top_ -= stride_;
+
+		return buffer_[top_];
+
+	return GNValue::getInvalid();
+}
+
+CUDAH void GStack::push(GNValue new_val)
+{
+	buffer_[top_] = new_val;
+	top_ += stride_;
+}
+
+CUDAH void GStack::reset()
+{
+	top_ = 0;
 }
 
 }

@@ -57,7 +57,7 @@ bool GExecutorProjection::execute()
 	return true;
 }
 
-extern "C" __global__ void gevaluate0(GTable output, GTable input, int *tuple_array, int rows)
+__global__ void evaluate0(GTable output, GTable input, int *tuple_array, int rows)
 {
 	int index = threadIdx.x + blockIdx.x * blockDim.x;
 	int stride = blockDim.x * gridDim.x;
@@ -76,7 +76,7 @@ extern "C" __global__ void gevaluate0(GTable output, GTable input, int *tuple_ar
 	}
 }
 
-extern "C" __global__ void gevaluate1(GTable output, int *param_array, GNValue *param, int rows)
+__global__ void evaluate1(GTable output, int *param_array, GNValue *param, int rows)
 {
 	int index = threadIdx.x + blockIdx.x * blockDim.x;
 	int stride = blockDim.x * gridDim.x;
@@ -92,21 +92,23 @@ extern "C" __global__ void gevaluate1(GTable output, int *param_array, GNValue *
 	}
 }
 
-extern "C" __global__ void gevaluate2(GTable output, GTable input, GExpressionVector expression, int rows, int64_t *val_stack, ValueType *type_stack)
+__global__ void evaluate2(GTable output, GTable input, GExpressionVector expression, int rows, GNValue *stack)
 {
 	int index = threadIdx.x + blockIdx.x * blockDim.x;
 	int stride = blockDim.x * gridDim.x;
 	GTuple input_tuple, output_tuple;
 	GNValue tmp;
+	GTuple dummy;
 	int columns = output.getColumnCount();
+	GStack tmp_stk(stack + index, stride);
 
 	for (int i = index; i < rows; i += stride) {
 		output_tuple = output.getGTuple(i);
 		input_tuple = input.getGTuple(i);
 
 		for (int j = 0; j < expression.size(); j++) {
-
-			tmp = expression.at(j).evaluate(&input_tuple, NULL, val_stack + index, type_stack + index, stride);
+			tmp_stk.reset();
+			tmp = expression.at(j).evaluate(input_tuple, dummy, tmp_stk);
 
 			output_tuple.setGNValue(tmp, j);
 		}
@@ -119,26 +121,37 @@ void GExecutorProjection::evaluate()
 	int block_x = (rows > BLOCK_SIZE_X) ? BLOCK_SIZE_X : rows;
 	int grid_x = (rows - 1) / block_x + 1;
 
-	int64_t *val_stack = NULL;
-	ValueType *type_stack = NULL;
+
 
 	if (tuple_array_ != NULL) {
-		gevaluate0<<<grid_x, block_x>>>(*output_, input_, tuple_array_, rows);
+		evaluate0<<<grid_x, block_x>>>(*output_, input_, tuple_array_, rows);
+		checkCudaErrors(cudaGetLastError());
+		checkCudaErrors(cudaDeviceSynchronize());
+
 	} else if (param_array_ != NULL) {
-		gevaluate1<<<grid_x, block_x>>>(*output_, param_array_, param_, rows);
+		evaluate1<<<grid_x, block_x>>>(*output_, param_array_, param_, rows);
+		checkCudaErrors(cudaGetLastError());
+		checkCudaErrors(cudaDeviceSynchronize());
 	} else {
-		checkCudaErrors(cudaMalloc(&val_stack, sizeof(int64_t) * grid_x * block_x * MAX_STACK_SIZE));
-		checkCudaErrors(cudaMalloc(&type_stack, sizeof(ValueType) * grid_x * block_x * MAX_STACK_SIZE));
 
-		gevaluate2<<<grid_x, block_x>>>(*output_, input_, expression_, rows, val_stack, type_stack);
+		int stack_size = 0;
+		GNValue *stack = NULL;
+
+		for (int i = 0; i < expression_.size(); i++) {
+			if (stack_size < expression_[i].height())
+				stack_size = expression_[i].height();
+		}
+
+		checkCudaErrors(cudaMalloc(stack, sizeof(GNValue) * grid_x * block_x * stack_size));
+
+		evaluate2<<<grid_x, block_x>>>(*output_, input_, expression_, rows, stack);
+		checkCudaErrors(cudaGetLastError());
+		checkCudaErrors(cudaDeviceSynchronize());
+
+		if (stack_size > 0) {
+			checkCudaErrors(cudaFree(stack));
+		}
 	}
-	checkCudaErrors(cudaDeviceSynchronize());
-
-	if (val_stack != NULL)
-		checkCudaErrors(cudaFree(val_stack));
-
-	if (type_stack != NULL)
-		checkCudaErrors(cudaFree(type_stack));
 }
 
 std::string GExecutorProjection::debug() const

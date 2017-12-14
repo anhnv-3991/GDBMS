@@ -4,17 +4,10 @@
 namespace voltdb{
 
 #define DEFAULT_PART_SIZE_ (1024 * 1024)
-//#define DEFAULT_PART_SIZE_ 1024
-//#define DEFAULT_PART_SIZE_ (128 * 1024)
 #define PART_SIZE_ 1024
-//1blockでのスレッド数の定義。
-//#define BLOCK_SIZE_X 1024//outer ,left
 #define BLOCK_SIZE_X 1024
 #define GRID_SIZE_X (1024 * 1024)
 #define GRID_SIZE_Y (64 * 1024)
-
-//#define BLOCK_SIZE_Y 2048  //inner ,right
-#define BLOCK_SIZE_Y (1024 * 1024)
 
 
 #define PARTITION 64
@@ -37,7 +30,6 @@ namespace voltdb{
 #define MAX_BUFFER_SIZE (1024 * 1024)
 #define SHARED_MEM 128
 #define SHARED_SIZE_ 49152
-
 
 typedef struct _RESULT {
     int lkey;

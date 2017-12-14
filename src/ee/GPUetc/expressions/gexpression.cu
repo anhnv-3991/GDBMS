@@ -15,6 +15,8 @@ GExpression::GExpression(ExpressionNode *expression) {
 
 	size_ = size;
 
+	height_ = computeHeight(expression);
+
 	if (size_ > 0) {
 		checkCudaErrors(cudaMalloc(&expression_, tree_size * sizeof(GTreeNode)));
 		createExpression(expression);
@@ -76,6 +78,20 @@ bool GExpression::buildPostExpression(GTreeNode *output_expression, ExpressionNo
 	(*index)++;
 
 	return true;
+}
+
+int GExpression::computeHeight(ExpressionNode *expression)
+{
+	if (expression == NULL)
+		return 0;
+
+	int lh = computeHeight(expression->left);
+	int rh = computeHeight(expression->right);
+
+	if (lh > rh)
+		return lh + 1;
+
+	return rh + 1;
 }
 
 std::string GExpression::debug() const

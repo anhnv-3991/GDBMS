@@ -158,28 +158,38 @@ void GPUNIJ::profiling()
 }
 
 
-extern "C" __global__ void firstEvaluation(GTable outer, GTable inner,
-											int outer_rows, int inner_rows,
-											ulong *pre_join_count,
-											GExpression pre_join_pred, GExpression join_pred, GExpression where_pred,
-											int64_t *val_stack, ValueType *type_stack)
+__global__ void evaluation0(GTable outer, GTable inner,
+								int outer_rows, int inner_rows,
+								ulong *pre_join_count,
+								GExpression pre_join_pred, GExpression join_pred, GExpression where_pred,
+								GNValue *stack)
 {
 	int index = threadIdx.x + blockIdx.x * blockDim.x;
 	int stride = blockDim.x * gridDim.x;
 	GNValue res;
 	int count = 0;
 	GTuple outer_tuple, inner_tuple;
+	GStack tmp_stk(stack + index, stride);
 
 	for (int i = index; i < outer_rows; i += stride) {
 		outer_tuple = outer.getGTuple(i);
 
 		for (int j = 0; j < inner_rows; j++) {
+			tmp_stk.reset();
 			inner_tuple = inner.getGTuple(j);
 			res = GNValue::getTrue();
 
-			res = (pre_join_pred.getSize() > 0) ? pre_join_pred.evaluate(&outer_tuple, &inner_tuple, val_stack + index, type_stack + index, stride) : res;
-			res = (res.isTrue() && join_pred.getSize() > 0) ? join_pred.evaluate(&outer_tuple, &inner_tuple, val_stack + index, type_stack + index, stride) : res;
-			res = (res.isTrue() && where_pred.getSize() > 0) ? where_pred.evaluate(&outer_tuple, &inner_tuple, val_stack + index, type_stack + index, stride) : res;
+			if (pre_join_pred.size() > 0) {
+				res = pre_join_pred.evaluate(outer_tuple, inner_tuple, tmp_stk);
+			}
+
+			if (join_pred.size() > 0) {
+				res = join_pred.evaluate(outer_tuple, inner_tuple, tmp_stk) && res;
+			}
+
+			if (where_pred.size() > 0) {
+				res = where_pred.evaluate(outer_tuple, inner_tuple, tmp_stk) && res;
+			}
 
 			count += (res.isTrue()) ? 1 : 0;
 		}
@@ -188,11 +198,12 @@ extern "C" __global__ void firstEvaluation(GTable outer, GTable inner,
 
 	if (index < outer_rows)
 		pre_join_count[index] = count;
+
 	if (index == 0)
 		pre_join_count[outer_rows] = 0;
 }
 
-void GPUNIJ::FirstEvaluation(ulong *first_count)
+void GPUNIJ::firstEvaluation(ulong *first_count)
 {
 	int outer_rows = outer_table_.getCurrentRowNum();
 	int block_x, grid_x;
@@ -200,35 +211,46 @@ void GPUNIJ::FirstEvaluation(ulong *first_count)
 	block_x = (outer_rows < BLOCK_SIZE_X) ? outer_rows : BLOCK_SIZE_X;
 	grid_x = (outer_rows - 1)/block_x + 1;
 
-	int64_t *val_stack;
-	ValueType *type_stack;
+	int stack_size = pre_join_predicate_.height();
 
-	checkCudaErrors(cudaMalloc(&val_stack, sizeof(int64_t) * block_x * grid_x * MAX_STACK_SIZE));
-	checkCudaErrors(cudaMalloc(&type_stack, sizeof(ValueType) * block_x * grid_x * MAX_STACK_SIZE));
+	if (stack_size < join_predicate_.height()) {
+		stack_size = join_predicate_.height();
+	}
 
-	printf("start evaluate\n");
-	firstEvaluation<<<grid_x, block_x>>>(outer_table_, inner_table_,
+	if (stack_size < where_predicate_.height()) {
+		stack_size = where_predicate_.height();
+	}
+
+	GNValue *stack = NULL;
+
+	if (stack_size > 0) {
+		checkCudaErrors(cudaMalloc(&stack, sizeof(GNValue) * block_x * grid_x * stack_size));
+	}
+
+	evaluation0<<<grid_x, block_x>>>(outer_table_, inner_table_,
 										outer_table_.getCurrentRowNum(), inner_table_.getCurrentRowNum(),
 										first_count,
 										pre_join_predicate_, join_predicate_, where_predicate_,
-										val_stack, type_stack);
+										stack);
 	checkCudaErrors(cudaGetLastError());
 	checkCudaErrors(cudaDeviceSynchronize());
 
-	checkCudaErrors(cudaFree(val_stack));
-	checkCudaErrors(cudaFree(type_stack));
+	if (stack_size > 0) {
+		checkCudaErrors(cudaFree(stack));
+	}
 }
 
-extern "C" __global__ void secondEvaluation(GTable outer, GTable inner,
-											int outer_rows, int inner_rows,
-											ulong *write_location, RESULT *output,
-											GExpression pre_join_pred, GExpression join_pred, GExpression where_pred,
-											int64_t *val_stack, ValueType *type_stack)
+__global__ void evaluation1(GTable outer, GTable inner,
+								int outer_rows, int inner_rows,
+								ulong *write_location, RESULT *output,
+								GExpression pre_join_pred, GExpression join_pred, GExpression where_pred,
+								GNValue *stack)
 {
 	int index = threadIdx.x + blockIdx.x * blockDim.x;
 	int stride = blockDim.x * gridDim.x;
 	GNValue res;
 	GTuple outer_tuple, inner_tuple;
+	GStack tmp_stk(stack + index, stride);
 
 	for (int i = index; i < outer_rows; i += stride) {
 		int location = write_location[i];
@@ -236,12 +258,22 @@ extern "C" __global__ void secondEvaluation(GTable outer, GTable inner,
 		outer_tuple = outer.getGTuple(i);
 
 		for (int j = 0; j < inner_rows; j++) {
+			tmp_stk.reset();
 			inner_tuple = inner.getGTuple(j);
 
 			res = GNValue::getTrue();
-			res = (pre_join_pred.getSize() > 0) ? pre_join_pred.evaluate(&outer_tuple, &inner_tuple, val_stack + index, type_stack + index, stride) : res;
-			res = (res.isTrue() && join_pred.getSize() > 0) ? join_pred.evaluate(&outer_tuple, &inner_tuple, val_stack + index, type_stack + index, stride) : res;
-			res = (res.isTrue() && where_pred.getSize() > 0) ?where_pred.evaluate(&outer_tuple, &inner_tuple, val_stack + index, type_stack + index, stride) : res;
+
+			if (pre_join_pred.size() > 0) {
+				res = pre_join_pred.evaluate(outer_tuple, inner_tuple, tmp_stk);
+			}
+
+			if (join_pred.size() > 0) {
+				res = join_pred.evaluate(outer_tuple, inner_tuple, tmp_stk) && res;
+			}
+
+			if (where_pred.size() > 0) {
+				res = where_pred.evaluate(outer_tuple, inner_tuple, tmp_stk) && res;
+			}
 
 			output[location].lkey = (res.isTrue()) ? i : (-1);
 			output[location].rkey = (res.isTrue()) ? j : (-1);
@@ -250,7 +282,7 @@ extern "C" __global__ void secondEvaluation(GTable outer, GTable inner,
 	}
 }
 
-void GPUNIJ::SecondEvaluation(RESULT *join_result, ulong *write_location)
+void GPUNIJ::secondEvaluation(RESULT *join_result, ulong *write_location)
 {
 	int outer_rows = outer_table_.getCurrentRowNum();
 	int block_x, grid_x;
@@ -258,31 +290,40 @@ void GPUNIJ::SecondEvaluation(RESULT *join_result, ulong *write_location)
 	block_x = (outer_rows < BLOCK_SIZE_X) ? outer_rows : BLOCK_SIZE_X;
 	grid_x = (outer_rows - 1) / block_x + 1;
 
-	int64_t *val_stack;
-	ValueType *type_stack;
+	int stack_size = pre_join_predicate_.height();
 
-	checkCudaErrors(cudaMalloc(&val_stack, sizeof(int64_t) * block_x * grid_x * MAX_STACK_SIZE));
-	checkCudaErrors(cudaMalloc(&type_stack, sizeof(ValueType) * block_x * grid_x * MAX_STACK_SIZE));
+	if (stack_size < join_predicate_.height()) {
+		stack_size = join_predicate_.height();
+	}
+
+	if (stack_size < where_predicate_.height()) {
+		stack_size = where_predicate_.height();
+	}
+
+	GNValue *stack = NULL;
+
+	if (stack_size > 0) {
+		checkCudaErrors(cudaMalloc(&stack, sizeof(GNValue) * block_x * grid_x * stack_size));
+	}
 
 	secondEvaluation<<<grid_x, block_x>>>(outer_table_, inner_table_,
 											outer_table_.getCurrentRowNum(), inner_table_.getCurrentRowNum(),
 											write_location, join_result,
 											pre_join_predicate_, join_predicate_, where_predicate_,
-											val_stack, type_stack);
+											stack);
 	checkCudaErrors(cudaGetLastError());
 	checkCudaErrors(cudaDeviceSynchronize());
 
-	checkCudaErrors(cudaFree(val_stack));
-	checkCudaErrors(cudaFree(type_stack));
+	if (stack_size > 0) {
+		checkCudaErrors(cudaFree(stack));
+	}
 }
 
-extern "C" __global__ void outputResult(GTable outer, GTable inner, RESULT *join_result, GTable output, int starting_row, int size)
+__global__ void outputResult(GTable outer, GTable inner, RESULT *join_result, int outer_cols, int inner_cols, GTable output, int starting_row, int size)
 {
 	int index = threadIdx.x + blockIdx.x * blockDim.x;
 	int stride = blockDim.x * gridDim.x;
 	GTuple tuple;
-	int outer_cols = outer.getColumnCount();
-	int inner_cols = inner.getColumnCount();
 
 	for (int i = index; i < size; i += stride) {
 		if (join_result[i].lkey != -1 && join_result[i].rkey != -1) {
@@ -297,7 +338,7 @@ extern "C" __global__ void outputResult(GTable outer, GTable inner, RESULT *join
 	}
 }
 
-void GPUNIJ::Output(RESULT *join_result, int current_size)
+void GPUNIJ::output(RESULT *join_result, int current_size)
 {
 	int block_id, tuple_id;
 
@@ -307,12 +348,15 @@ void GPUNIJ::Output(RESULT *join_result, int current_size)
 	int size = output_->getFreeTupleCount();
 	size = (current_size < size) ? current_size : size;
 
+	int outer_col = outer_table_.getColumnCount();
+	int inner_col = inner_table_.getColumnCount();
+
 	int block_x, grid_x;
 
 	block_x = (size < BLOCK_SIZE_X) ? size : BLOCK_SIZE_X;
 	grid_x = (size - 1)/block_x + 1;
 
-	outputResult<<<grid_x, block_x>>>(outer_table_, inner_table_, join_result, *output_, 0, size);
+	outputResult<<<grid_x, block_x>>>(outer_table_, inner_table_, outer_col, inner_col, join_result, *output_, 0, size);
 	checkCudaErrors(cudaDeviceSynchronize());
 
 	output_->setBlockRow(block_id, output_->getCurrentRowNum() + size);
@@ -336,7 +380,7 @@ void GPUNIJ::Output(RESULT *join_result, int current_size)
 		grid_x = (tuples_per_block - 1) / block_x + 1;
 
 		output_->addBlock();
-		outputResult<<<grid_x, block_x>>>(outer_table_, inner_table_, join_result + starting_row, *output_, 0, tuples_per_block);
+		outputResult<<<grid_x, block_x>>>(outer_table_, inner_table_, outer_col, inner_col, join_result + starting_row, *output_, 0, tuples_per_block);
 		checkCudaErrors(cudaDeviceSynchronize());
 		output_->setBlockRow(block_id + i, tuples_per_block);
 		current_tuple_count += tuples_per_block;

@@ -4,10 +4,9 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include "KeyIndex.h"
-#include "GPUetc/common/nodedata.h"
-#include "GPUetc/common/GPUTUPLE.h"
 #include "Index.h"
 #include "GPUetc/storage/gtuple.h"
+#include "GPUetc/common/common.h"
 
 namespace voltdb {
 
@@ -18,7 +17,7 @@ namespace voltdb {
 
 class GTreeIndexKey: public GKeyIndex {
 public:
-	__forceinline__ __device__ GTreeIndexKey() {
+	CUDAH GTreeIndexKey() {
 		schema_ = NULL;
 		size_ = 0;
 		packed_key_ = NULL;
@@ -26,41 +25,41 @@ public:
 
 	/* Construct a key object from a packed key buffer an a schema buffer.
 	 */
-	__forceinline__ __device__ GTreeIndexKey(int64_t *packed_key, GColumnInfo *schema, int key_size) {
+	CUDAH GTreeIndexKey(int64_t *packed_key, GColumnInfo *schema, int key_size) {
 		packed_key_ = packed_key;
 		schema_ = schema;
 		size_ = key_size;
 	}
 
-	__forceinline__ __device__ void createKey(int64_t *tuple, GColumnInfo *schema, int *key_schema, int key_size) {
+	CUDAH void createKey(int64_t *tuple, GColumnInfo *schema, int *key_schema, int key_size) {
 		for (int i = 0; i < key_size; i++) {
 			packed_key_[i] = tuple[key_schema[i]];
 			schema_[i] = schema[key_schema[i]];
 		}
 	}
 
-	__forceinline__ __device__ void createKey(GTuple tuple, int *key_schema, int key_size) {
+	CUDAH void createKey(GTuple tuple, int *key_schema, int key_size) {
 		for (int i = 0; i < key_size; i++) {
 			packed_key_[i] = tuple.tuple_[key_schema[i]];
 			schema_[i] = tuple.schema_[key_schema[i]];
 		}
 	}
 
-	__forceinline__ __device__ void createKey(int64_t *tuple, GColumnInfo *schema) {
+	CUDAH void createKey(int64_t *tuple, GColumnInfo *schema) {
 		for (int i = 0; i < size_; i++) {
 			packed_key_[i] = tuple[i];
 			schema_[i] = schema[i];
 		}
 	}
 
-	__forceinline__ __device__ void createKey(GTuple tuple) {
+	CUDAH void createKey(GTuple tuple) {
 		for (int i = 0; i < size_; i++) {
 			packed_key_[i] = tuple.tuple_[i];
 			schema_[i] = tuple.schema_[i];
 		}
 	}
 
-	static __forceinline__ __device__ int KeyComparator(GTreeIndexKey left, GTreeIndexKey right) {
+	static CUDAH int KeyComparator(GTreeIndexKey left, GTreeIndexKey right) {
 		int64_t res_i = 0;
 		double res_d = 0;
 		ValueType left_type, right_type;
@@ -89,7 +88,7 @@ public:
 	 * This is used to construct key values of a tuple.
 	 * The type of the key value is ignored.
 	 */
-	__forceinline__ __device__ void insertKeyValue(int64_t value, int key_col) {
+	CUDAH void insertKeyValue(int64_t value, int key_col) {
 		packed_key_[key_col] = value;
 	}
 
@@ -119,38 +118,38 @@ public:
 	void merge(int old_left, int old_right, int new_left, int new_right);
 
 
-	__forceinline__ __device__ GTreeIndexKey getKeyAtSortedIndex(int key_index) {
+	CUDAH GTreeIndexKey getKeyAtSortedIndex(int key_index) {
 		return GTreeIndexKey(packed_key_ + sorted_idx_[key_index] * key_size_, key_schema_, key_size_);
 	}
 
-	__forceinline__ __device__ GTreeIndexKey getKeyAtIndex(int key_index) {
+	CUDAH GTreeIndexKey getKeyAtIndex(int key_index) {
 		return GTreeIndexKey(packed_key_ + key_index * key_size_, key_schema_, key_size_);
 	}
 
-	__forceinline__ __device__ GColumnInfo *getSchema();
+	CUDAH GColumnInfo *getSchema();
 
-	__forceinline__ __device__ int getKeyNum();
+	CUDAH int getKeyNum();
 
-	__forceinline__ __device__ int *getSortedIdx();
+	CUDAH int *getSortedIdx();
 
-	__forceinline__ __device__ int *getKeyIdx();
+	CUDAH int *getKeyIdx();
 
-	__forceinline__ __device__ int getKeySize();
+	CUDAH int getKeySize();
 
-	__forceinline__ __device__ int64_t *getPackedKey();
+	CUDAH int64_t *getPackedKey();
 
-	__forceinline__ __device__ int lowerBound(GTreeIndexKey key, int left, int right);
+	CUDAH int lowerBound(GTreeIndexKey key);
 
-	__forceinline__ __device__ int upperBound(GTreeIndexKey key, int left, int right);
+	CUDAH int upperBound(GTreeIndexKey key);
 
-	__forceinline__ __device__ int lowerBound(GTreeIndexKey key, int root, int size, int stride);
+	CUDAH int lowerBound(GTreeIndexKey key, int root, int size, int stride);
 
-	__forceinline__ __device__ int upperBound(GTreeIndexKey key, int root, int size, int stride);
+	CUDAH int upperBound(GTreeIndexKey key, int root, int size, int stride);
 
 	/* Insert key values of a tuple to the 'location' of the key list 'packed_key_'.
 	 */
-	__forceinline__ __device__ void insertKeyTupleNoSort(GTuple tuple, int location);
-	__forceinline__ __device__ void swap(int left, int right);
+	CUDAH void insertKeyTupleNoSort(GTuple tuple, int location);
+	CUDAH void swap(int left, int right);
 
 
 	void removeIndex();
@@ -165,36 +164,37 @@ protected:
 
 extern "C" __global__ void quickSort(GTreeIndex *indexes, int left, int right);
 
-__forceinline__ __device__ GColumnInfo *GTreeIndex::getSchema() {
+CUDAH GColumnInfo *GTreeIndex::getSchema() {
 	return key_schema_;
 }
 
 
-__forceinline__ __device__ int GTreeIndex::getKeyNum() {
+CUDAH int GTreeIndex::getKeyNum() {
 	return key_num_;
 }
 
-__forceinline__ __device__ int *GTreeIndex::getSortedIdx() {
+CUDAH int *GTreeIndex::getSortedIdx() {
 	return sorted_idx_;
 }
 
-__forceinline__ __device__ int *GTreeIndex::getKeyIdx() {
+CUDAH int *GTreeIndex::getKeyIdx() {
 	return key_idx_;
 }
 
-__forceinline__ __device__ int GTreeIndex::getKeySize() {
+CUDAH int GTreeIndex::getKeySize() {
 	return key_size_;
 }
 
-__forceinline__ __device__ int64_t *GTreeIndex::getPackedKey() {
+CUDAH int64_t *GTreeIndex::getPackedKey() {
 	return packed_key_;
 }
 
-__forceinline__ __device__ int GTreeIndex::lowerBound(GTreeIndexKey key, int left, int right)
+CUDAH int GTreeIndex::lowerBound(GTreeIndexKey key)
 {
 	int middle = -1;
 	int result = -1;
 	int compare_res = 0;
+	int left = 0, right = key_num_ - 1;
 
 	while (left <= right) {
 		middle = (left + right) >> 1;
@@ -212,11 +212,12 @@ __forceinline__ __device__ int GTreeIndex::lowerBound(GTreeIndexKey key, int lef
 }
 
 
-__forceinline__ __device__ int GTreeIndex::upperBound(GTreeIndexKey key, int left, int right)
+CUDAH int GTreeIndex::upperBound(GTreeIndexKey key)
 {
 	int middle = -1;
 	int result = right - 1;
 	int compare_res = 0;
+	int left = 0, right = key_num_ - 1;
 
 	while (left <= right) {
 		middle = (left + right) >> 1;
@@ -234,7 +235,7 @@ __forceinline__ __device__ int GTreeIndex::upperBound(GTreeIndexKey key, int lef
 	return result;
 }
 
-__forceinline__ __device__ int GTreeIndex::lowerBound(GTreeIndexKey key, int root, int size, int stride)
+CUDAH int GTreeIndex::lowerBound(GTreeIndexKey key, int root, int size, int stride)
 {
 	int middle = -1;
 	int result = -1;
@@ -256,7 +257,7 @@ __forceinline__ __device__ int GTreeIndex::lowerBound(GTreeIndexKey key, int roo
 	return result;
 }
 
-__forceinline__ __device__ int GTreeIndex::upperBound(GTreeIndexKey key, int root, int size, int stride)
+CUDAH int GTreeIndex::upperBound(GTreeIndexKey key, int root, int size, int stride)
 {
 	int middle = -1;
 	int result = root + (size - 1) * stride;
@@ -278,7 +279,7 @@ __forceinline__ __device__ int GTreeIndex::upperBound(GTreeIndexKey key, int roo
 	return result;
 }
 
-__forceinline__ __device__ void GTreeIndex::insertKeyTupleNoSort(GTuple tuple, int location)
+CUDAH void GTreeIndex::insertKeyTupleNoSort(GTuple tuple, int location)
 {
 	for (int i = 0; i < key_size_; i++) {
 		packed_key_[location * key_size_ + i] = tuple.tuple_[key_idx_[i]];
@@ -286,7 +287,7 @@ __forceinline__ __device__ void GTreeIndex::insertKeyTupleNoSort(GTuple tuple, i
 	sorted_idx_[location] = location;
 }
 
-__forceinline__ __device__ void GTreeIndex::swap(int left, int right)
+CUDAH void GTreeIndex::swap(int left, int right)
 {
 	int tmp = sorted_idx_[left];
 

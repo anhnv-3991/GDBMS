@@ -2,10 +2,7 @@
 #define GPUIJ_H
 
 #include <cuda.h>
-#include "GPUetc/common/GPUTUPLE.h"
-#include "GPUetc/common/nodedata.h"
 #include "common/types.h"
-#include "GPUetc/common/GNValue.h"
 #include "GPUetc/storage/gtable.h"
 #include "GPUetc/expressions/gexpression.h"
 
@@ -13,6 +10,8 @@ namespace voltdb {
 
 
 class GPUIJ {
+	using GExpression::ExpressionNode;
+
 public:
 	GPUIJ();
 
@@ -29,7 +28,7 @@ public:
 
 	~GPUIJ();
 
-	bool join();
+	bool execute();
 
 	void getResult(RESULT *output) const;
 
@@ -62,28 +61,28 @@ private:
 
 	unsigned long timeDiff(struct timeval start, struct timeval end);
 
-	void PrejoinFilter(bool *result);
-	void PrejoinFilter(bool *result, cudaStream_t stream);
+	void prejoinFilter(bool *result);
+	void prejoinFilter(bool *result, cudaStream_t stream);
 
-	void Decompose(ResBound *in, RESULT *out, ulong *in_location, ulong *local_offset, int size);
-	void Decompose(ResBound *in, RESULT *out, ulong *in_location, ulong *local_offset, int size, cudaStream_t stream);
+	void decompose(ResBound *in, RESULT *out, ulong *in_location, ulong *local_offset, int size);
+	void decompose(ResBound *in, RESULT *out, ulong *in_location, ulong *local_offset, int size, cudaStream_t stream);
 
-	void IndexFilter(ulong *index_psum, ResBound *res_bound, bool *prejoin_res_dev);
+	void indexFilter(ulong *index_psum, ResBound *res_bound, bool *prejoin_res_dev);
 
-	void IndexFilter(ulong *index_psum, ResBound *res_bound, bool *prejoin_res_dev, cudaStream_t stream);
+	void indexFilter(ulong *index_psum, ResBound *res_bound, bool *prejoin_res_dev, cudaStream_t stream);
 
 	/* Expression evaluation without rebalancing */
-	void ExpressionFilter(ulong *index_psum, ulong *exp_psum, RESULT *result, int result_size, ResBound *res_bound, bool *prejoin_res_dev);
+	void expressionFilter(ulong *index_psum, ulong *exp_psum, RESULT *result, int result_size, ResBound *res_bound, bool *prejoin_res_dev);
 
-	void ExpressionFilter(ulong *index_psum, ulong *exp_psum, RESULT *result, int result_size, ResBound *res_bound, bool *prejoin_res_dev, cudaStream_t stream);
+	void expressionFilter(ulong *index_psum, ulong *exp_psum, RESULT *result, int result_size, ResBound *res_bound, bool *prejoin_res_dev, cudaStream_t stream);
 
 	/* Expression evaluation with rebalancing */
-	void ExpressionFilter(RESULT *in_bound, RESULT *out_bound, ulong *mark_location, int size);
+	void expressionFilter(RESULT *in_bound, RESULT *out_bound, ulong *mark_location, int size);
 
-	void ExpressionFilter(RESULT *in_bound, RESULT *out_bound, ulong *mark_location, int size, cudaStream_t stream);
+	void expressionFilter(RESULT *in_bound, RESULT *out_bound, ulong *mark_location, int size, cudaStream_t stream);
 
-	void Rebalance(ulong *in, ResBound *in_bound, RESULT **out_bound, int in_size, ulong *out_size);
-	void Rebalance(ulong *in, ResBound *in_bound, RESULT **out_bound, int in_size, ulong *out_size, cudaStream_t stream);
+	void rebalance(ulong *in, ResBound *in_bound, RESULT **out_bound, int in_size, ulong *out_size);
+	void rebalance(ulong *in, ResBound *in_bound, RESULT **out_bound, int in_size, ulong *out_size, cudaStream_t stream);
 };
 }
 

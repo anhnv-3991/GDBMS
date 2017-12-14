@@ -30,21 +30,26 @@ GpuSeqScan::~GpuSeqScan()
 	output_column_exp_.free();
 }
 
-extern "C" __global__ void seqscanPredicateCheck(int *result, GTable input_table,
-													int rows,
-													GExpression predicate,
-													int64_t *val_stack, ValueType *type_stack)
+__global__ void seqscanPredicateCheck(int *result, GTable input_table,
+											int rows,
+											GExpression predicate,
+											GNValue *stack)
 {
 	int index = threadIdx.x + blockIdx.x * blockDim.x;
 	int stride = blockDim.x * gridDim.x;
 
 	GTuple in_tuple;
 	GNValue res;
+	GStack tmp_stk(stack + index, stride);
 
 	for (int i = index; i < rows; i += stride) {
 		in_tuple = input_table.getGTuple(i);
+		res = GNValue::getTrue();
+		tmp_stk.reset();
 
-		res = (predicate.getSize() > 0) ? predicate.evaluate(&in_tuple, NULL, val_stack + index, type_stack + index, stride) : GNValue::getTrue();
+		if (predicate.size() > 0) {
+			res = predicate.evaluate(in_tuple, GTuple(), tmp_stk);
+		}
 
 		result[i] = (res.isTrue()) ? 1 : 0;
 	}
@@ -53,9 +58,9 @@ extern "C" __global__ void seqscanPredicateCheck(int *result, GTable input_table
 		result[index] = 0;
 }
 
-extern "C" __global__ void seqscanOutputResult(GTable output_table, GTable input_table, int *check_result, int *location, int rows,
-												GExpressionVector output_column_exp,
-												int64_t *val_stack, ValueType *type_stack)
+__global__ void seqscanOutputResult(GTable output_table, GTable input_table, int *check_result, int *location, int rows,
+										GExpressionVector output_column_exp,
+										GNValue *stack)
 {
 	int index = threadIdx.x + blockIdx.x * blockDim.x;
 	int stride = blockDim.x * gridDim.x;
@@ -63,6 +68,8 @@ extern "C" __global__ void seqscanOutputResult(GTable output_table, GTable input
 	GNValue tmp;
 	GTuple out_tuple, in_tuple;
 	int exp_num = output_column_exp.size();
+	GStack tmp_stk(stack + index, stride);
+	GTuple dummy;
 
 	for (int i = index; i < rows; i += stride) {
 		if (check_result[i] == 1) {
@@ -70,7 +77,9 @@ extern "C" __global__ void seqscanOutputResult(GTable output_table, GTable input
 			out_tuple = output_table.getGTuple(location[i]);
 
 			for (int j = 0; j < exp_num; j++) {
-				tmp = output_column_exp.at(j).evaluate(&in_tuple, NULL, val_stack + index, type_stack + index, stride);
+				tmp_stk.reset();
+
+				tmp = output_column_exp.at(j).evaluate(in_tuple, dummy, tmp_stk);
 				out_tuple.setGNValue(tmp, j);
 			}
 		}
@@ -85,28 +94,31 @@ void GpuSeqScan::seqScan()
 
 	int grid_x = (rows - 1) / block_x + 1;
 
-	int64_t *val_stack;
-	ValueType *type_stack;
+	int stack_size = predicate_.height();
+	GNValue *stack = NULL;
 
-	checkCudaErrors(cudaMalloc(&val_stack, sizeof(int64_t) * block_x * grid_x * MAX_STACK_SIZE));
-	checkCudaErrors(cudaMalloc(&type_stack, sizeof(ValueType) * block_x * grid_x * MAX_STACK_SIZE));
+
+	if (stack_size > 0) {
+		checkCudaErrors(cudaMalloc(&stack, sizeof(int64_t) * block_x * grid_x * stack_size));
+	}
 
 	int *check_result, *location;
 
 	checkCudaErrors(cudaMalloc(&check_result, sizeof(int) * rows));
 	checkCudaErrors(cudaMalloc(&location, sizeof(int) * (rows + 1)));
 
-	seqscanPredicateCheck<<<grid_x, block_x>>>(location, input_table_, rows, predicate_, val_stack, type_stack);
+	seqscanPredicateCheck<<<grid_x, block_x>>>(location, input_table_, rows, predicate_, stack);
 	checkCudaErrors(cudaDeviceSynchronize());
 	checkCudaErrors(cudaMemcpy(check_result, location, sizeof(int) * rows, cudaMemcpyDeviceToDevice));
 
 	GUtilities::ExclusiveScan<int>(location, rows + 1);
 
-	seqscanOutputResult<<<grid_x, block_x>>>(*output_table_, input_table_, check_result, location, rows, output_column_exp_, val_stack, type_stack);
+	seqscanOutputResult<<<grid_x, block_x>>>(*output_table_, input_table_, check_result, location, rows, output_column_exp_, stack);
 	checkCudaErrors(cudaDeviceSynchronize());
 
-	checkCudaErrors(cudaFree(val_stack));
-	checkCudaErrors(cudaFree(type_stack));
+	if (stack_size > 0) {
+		checkCudaErrors(cudaFree(stack));
+	}
 }
 
 bool GpuSeqScan::execute()

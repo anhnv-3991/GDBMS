@@ -189,7 +189,7 @@ uint GPUHJ::getPartitionSize() const
 }
 
 
-bool GPUHJ::join()
+bool GPUHJ::execute()
 {
 
 
@@ -222,7 +222,7 @@ bool GPUHJ::join()
 			inner_table_.moveToBlock(inner_idx);
 
 			gettimeofday(&index_count_start, NULL);
-			IndexCount(index_count, in_bound);
+			indexCount(index_count, in_bound);
 			gettimeofday(&index_count_end, NULL);
 
 			index_hcount_.push_back(GUtilities::timeDiff(index_count_start, index_count_end));
@@ -232,7 +232,7 @@ bool GPUHJ::join()
 			ulong *exp_psum;
 
 			gettimeofday(&rebalance_start, NULL);
-			Rebalance(index_count, in_bound, &tmp_bound, outer_table_.getCurrentRowNum() + 1, &out_size);
+			rebalance(index_count, in_bound, &tmp_bound, outer_table_.getCurrentRowNum() + 1, &out_size);
 			gettimeofday(&rebalance_end, NULL);
 			rebalance_cost_.push_back(GUtilities::timeDiff(rebalance_start, rebalance_end));
 
@@ -245,7 +245,7 @@ bool GPUHJ::join()
 			checkCudaErrors(cudaMalloc(&out_bound, out_size * sizeof(RESULT)));
 
 			gettimeofday(&join_start, NULL);
-			HashJoinLegacy(tmp_bound, out_bound, exp_psum, out_size);
+			hashJoinLegacy(tmp_bound, out_bound, exp_psum, out_size);
 			gettimeofday(&join_end, NULL);
 			join_time_.push_back(GUtilities::timeDiff(join_start, join_end));
 
@@ -387,7 +387,7 @@ extern "C" __global__ void indexCount(GHashIndex outer_index, GHashIndex inner_i
 	}
 }
 
-void GPUHJ::IndexCount(ulong *index_count, ResBound *out_bound)
+void GPUHJ::indexCount(ulong *index_count, ResBound *out_bound)
 {
 	int outer_rows = outer_table_.getCurrentRowNum();
 	int block_x, grid_x;
@@ -419,7 +419,7 @@ void GPUHJ::IndexCount(ulong *index_count, ResBound *out_bound)
 	checkCudaErrors(cudaFree(type_stack));
 }
 
-void GPUHJ::IndexCount(ulong *index_count, ResBound *out_bound, cudaStream_t stream)
+void GPUHJ::indexCount(ulong *index_count, ResBound *out_bound, cudaStream_t stream)
 {
 	int outer_rows = outer_table_.getCurrentRowNum();
 	int block_x, grid_x;
@@ -449,26 +449,36 @@ void GPUHJ::IndexCount(ulong *index_count, ResBound *out_bound, cudaStream_t str
 	checkCudaErrors(cudaFree(type_stack));
 }
 
-extern "C" __global__ void hashJoinLegacy(GTable outer, GTable inner,
-											RESULT *in_bound, RESULT *out_bound,
-											ulong *mark_location, int size,
-											GExpression end_exp, GExpression post_exp, GExpression where_exp,
-											int64_t *val_stack, ValueType *type_stack
-											)
+__global__ void expFilter(GTable outer, GTable inner,
+							RESULT *in_bound, RESULT *out_bound,
+							ulong *mark_location, int size,
+							GExpression end_exp, GExpression post_exp, GExpression where_exp,
+							GNValue *stack
+							)
 {
 	int index = threadIdx.x + blockIdx.x * blockDim.x;
 	int offset = blockDim.x * gridDim.x;
 	GNValue res;
 	GTuple outer_tuple, inner_tuple;
+	GStack tmp_stk(stack + index, offset);
 
 	for (int i = index; i < size; i += offset) {
 		outer_tuple = outer.getGTuple(in_bound[i].lkey);
 		inner_tuple = inner.getGTuple(in_bound[i].rkey);
 		res = GNValue::getTrue();
+		tmp_stk.reset();
 
-		res = (end_exp.getSize() > 0) ? end_exp.evaluate(&outer_tuple, &inner_tuple, val_stack + index, type_stack + index, offset) : res;
-		res = (post_exp.getSize() > 0 && res.isTrue()) ? post_exp.evaluate(&outer_tuple, &inner_tuple, val_stack + index, type_stack + index, offset) : res;
-		res = (where_exp.getSize() > 0 && res.isTrue()) ? where_exp.evaluate(&outer_tuple, &inner_tuple, val_stack + index, type_stack + index, offset) : res;
+		if (end_exp.size() > 0) {
+			res = end_exp.evaluate(outer_tuple, inner_tuple, tmp_stk);
+		}
+
+		if (post_exp.size() > 0) {
+			res = post_exp.evaluate(outer_tuple, inner_tuple, tmp_stk) && res;
+		}
+
+		if (where_exp.size() > 0) {
+			res = where_exp.evaluate(outer_tuple, inner_tuple, tmp_stk) && res;
+		}
 
 		out_bound[i].lkey = (res.isTrue()) ? in_bound[i].lkey : (-1);
 		out_bound[i].rkey = (res.isTrue()) ? in_bound[i].rkey : (-1);
@@ -480,7 +490,7 @@ extern "C" __global__ void hashJoinLegacy(GTable outer, GTable inner,
 	}
 }
 
-void GPUHJ::HashJoinLegacy(RESULT *in_bound, RESULT *out_bound, ulong *mark_location, int size)
+void GPUHJ::expressionFilter(RESULT *in_bound, RESULT *out_bound, ulong *mark_location, int size)
 {
 	int partition_size = DEFAULT_PART_SIZE_;
 	int block_x, grid_x;
@@ -488,30 +498,39 @@ void GPUHJ::HashJoinLegacy(RESULT *in_bound, RESULT *out_bound, ulong *mark_loca
 	block_x = (size < BLOCK_SIZE_X) ? size : BLOCK_SIZE_X;
 	grid_x = (size < partition_size) ? (size - 1)/block_x + 1 : (partition_size - 1)/block_x + 1;
 
+	int stack_size = end_expression_.height();
 
-	int64_t *val_stack;
-	ValueType *type_stack;
+	if (stack_size < post_expression_.height()) {
+		stack_size = post_expression_.height();
+	}
 
-	checkCudaErrors(cudaMalloc(&val_stack, sizeof(int64_t) * block_x * grid_x * MAX_STACK_SIZE));
-	checkCudaErrors(cudaMalloc(&type_stack, sizeof(ValueType) * block_x * grid_x * MAX_STACK_SIZE));
+	if (stack_size < where_expression_.height()) {
+		stack_size = where_expression_.height();
+	}
+
+	GNValue *stack = NULL;
+
+	if (stack_size > 0) {
+		checkCudaErrors(cudaMalloc(&stack, sizeof(GNValue) * block_x * grid_x * stack));
+	}
 
 	dim3 block_size(block_x, 1, 1);
 	dim3 grid_size(grid_x, 1, 1);
 
-	hashJoinLegacy<<<grid_size, block_size>>>(outer_table_, inner_table_,
-												in_bound, out_bound,
-												mark_location, size,
-												end_expression_, post_expression_, where_expression_,
-												val_stack,
-												type_stack);
+	expFilter<<<grid_size, block_size>>>(outer_table_, inner_table_,
+											in_bound, out_bound,
+											mark_location, size,
+											end_expression_, post_expression_, where_expression_,
+											stack);
 	checkCudaErrors(cudaGetLastError());
 	checkCudaErrors(cudaDeviceSynchronize());
 
-	checkCudaErrors(cudaFree(val_stack));
-	checkCudaErrors(cudaFree(type_stack));
+	if (stack_size > 0) {
+		checkCudaErrors(cudaFree(stack));
+	}
 }
 
-void GPUHJ::HashJoinLegacy(RESULT *in_bound, RESULT *out_bound, ulong *mark_location, int size, cudaStream_t stream)
+void GPUHJ::expressionFilter(RESULT *in_bound, RESULT *out_bound, ulong *mark_location, int size, cudaStream_t stream)
 {
 	int partition_size = DEFAULT_PART_SIZE_;
 	int block_x, grid_x;
@@ -519,31 +538,40 @@ void GPUHJ::HashJoinLegacy(RESULT *in_bound, RESULT *out_bound, ulong *mark_loca
 	block_x = (size < BLOCK_SIZE_X) ? size : BLOCK_SIZE_X;
 	grid_x = (size < partition_size) ? (size - 1)/block_x + 1 : (partition_size - 1)/block_x + 1;
 
+	int stack_size = end_expression_.height();
 
-	int64_t *val_stack;
-	ValueType *type_stack;
+	if (stack_size < post_expression_.height()) {
+		stack_size = post_expression_.height();
+	}
 
-	checkCudaErrors(cudaMalloc(&val_stack, sizeof(int64_t) * block_x * grid_x * MAX_STACK_SIZE));
-	checkCudaErrors(cudaMalloc(&type_stack, sizeof(ValueType) * block_x * grid_x * MAX_STACK_SIZE));
+	if (stack_size < where_expression_.height()) {
+		stack_size = where_expression_.height();
+	}
+
+	GNValue *stack = NULL;
+
+	if (stack_size > 0) {
+		checkCudaErrors(cudaMalloc(&stack, sizeof(GNValue) * block_x * grid_x * stack));
+	}
 
 	dim3 block_size(block_x, 1, 1);
 	dim3 grid_size(grid_x, 1, 1);
 
-	hashJoinLegacy<<<grid_size, block_size, 0, stream>>>(outer_table_, inner_table_,
-															in_bound, out_bound,
-															mark_location, size,
-															end_expression_, post_expression_, where_expression_,
-															val_stack,
-															type_stack);
+	expFilter<<<grid_size, block_size, 0, stream>>>(outer_table_, inner_table_,
+														in_bound, out_bound,
+														mark_location, size,
+														end_expression_, post_expression_, where_expression_,
+														stack);
 	checkCudaErrors(cudaGetLastError());
 	checkCudaErrors(cudaDeviceSynchronize());
 
-	checkCudaErrors(cudaFree(val_stack));
-	checkCudaErrors(cudaFree(type_stack));
+	if (stack_size > 0) {
+		checkCudaErrors(cudaFree(stack));
+	}
 }
 
 
-__global__ void HashDecompose(RESULT *output, ResBound *in_bound, int *sorted_idx, ulong *in_location, ulong *local_offset, int size)
+__global__ void hashDecompose(RESULT *output, ResBound *in_bound, int *sorted_idx, ulong *in_location, ulong *local_offset, int size)
 {
 	int index = threadIdx.x + blockIdx.x * blockDim.x;
 
@@ -567,7 +595,7 @@ void GPUHJ::decompose(RESULT *output, ResBound *in_bound, ulong *in_location, ul
 	GHashIndex *inner_idx;
 	int *sorted_idx = inner_idx->getSortedIdx();
 
-	HashDecompose<<<grid_size, block_size>>>(output, in_bound, sorted_idx, in_location, local_offset, size);
+	hashDecompose<<<grid_size, block_size>>>(output, in_bound, sorted_idx, in_location, local_offset, size);
 	checkCudaErrors(cudaGetLastError());
 	checkCudaErrors(cudaDeviceSynchronize());
 }
@@ -586,11 +614,11 @@ void GPUHJ::decompose(RESULT *output, ResBound *in_bound, ulong *in_location, ul
 	GHashIndex *inner_idx;
 	int *sorted_idx = inner_idx->getSortedIdx();
 
-	HashDecompose<<<grid_size, block_size, 0, stream>>>(output, in_bound, sorted_idx, in_location, local_offset, size);
+	hashDecompose<<<grid_size, block_size, 0, stream>>>(output, in_bound, sorted_idx, in_location, local_offset, size);
 	checkCudaErrors(cudaGetLastError());
 }
 
-void GPUHJ::Rebalance(ulong *index_count, ResBound *in_bound, RESULT **out_bound, int in_size, ulong *out_size)
+void GPUHJ::rebalance(ulong *index_count, ResBound *in_bound, RESULT **out_bound, int in_size, ulong *out_size)
 {
 	GUtilities::ExclusiveScan(index_count, in_size, out_size);
 
@@ -623,7 +651,7 @@ void GPUHJ::Rebalance(ulong *index_count, ResBound *in_bound, RESULT **out_bound
 	checkCudaErrors(cudaFree(location));
 }
 
-void GPUHJ::Rebalance(ulong *index_count, ResBound *in_bound, RESULT **out_bound, int in_size, ulong *out_size, cudaStream_t stream)
+void GPUHJ::rebalance(ulong *index_count, ResBound *in_bound, RESULT **out_bound, int in_size, ulong *out_size, cudaStream_t stream)
 {
 	GUtilities::ExclusiveScan(index_count, in_size, out_size, stream);
 
